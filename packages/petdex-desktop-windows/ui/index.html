@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Petdex</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: transparent;
+      width: 100vw; height: 100vh;
+      overflow: hidden;
+      user-select: none; -webkit-user-select: none;
+    }
+    .stage {
+      position: fixed;
+      top: 34px; left: 8px; /* 34px = Windows taskbar inset so pet sits above shelf */
+      pointer-events: none;
+    }
+    .pet {
+      aspect-ratio: 192 / 208; /* native spritesheet cell size (192×208 px) */
+      width: 4.5rem;            /* ~72px display size, scales with DPI */
+      image-rendering: pixelated;
+      background-repeat: no-repeat;
+      background-size: 800% 900%; /* COLS×100% ROWS×100% = 8 cols × 9 rows */
+      background-position: 0% 0%;
+      pointer-events: auto;
+      cursor: grab;
+    }
+    .pet.dragging { cursor: grabbing; }
+
+    /* Speech bubble — anchored above the pet */
+    #bubble {
+      position: fixed;
+      top: 4px; left: 4px;
+      background: rgba(255,255,255,0.93);
+      color: #1a1a1a;
+      font: 10px/1.4 system-ui, -apple-system, sans-serif;
+      padding: 5px 8px;
+      border-radius: 8px;
+      max-width: 128px;
+      word-wrap: break-word;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      pointer-events: none;
+      white-space: pre-wrap;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+    #bubble.visible { opacity: 1; }
+    /* Tail pointing down toward the pet */
+    #bubble::after {
+      content: '';
+      position: absolute;
+      bottom: -6px; left: 16px;
+      border: 6px solid transparent;
+      border-top-color: rgba(255,255,255,0.93);
+      border-bottom: 0;
+    }
+
+    #debug {
+      position: fixed; bottom: 2px; left: 4px;
+      font: 8px monospace; color: rgba(255,255,255,0.4);
+      pointer-events: none;
+      max-width: 136px; overflow: hidden; white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="bubble"></div>
+  <div class="stage">
+    <div class="pet" id="pet"></div>
+  </div>
+  <div id="debug">init</div>
+
+  <script>
+    const debugEl  = document.getElementById('debug');
+    const bubbleEl = document.getElementById('bubble');
+    const petEl    = document.getElementById('pet');
+
+    window.onerror = (msg, _src, line) => setDebug(`ERR L${line}: ${msg}`);
+    function setDebug(msg) { debugEl.textContent = msg; }
+
+    if (!window.__TAURI__) {
+      setDebug('NO __TAURI__');
+    } else {
+      main();
+    }
+
+    function main() {
+      const invoke = window.__TAURI__.core.invoke;
+
+      // ── Spritesheet constants (same as macOS Zig reference) ────────────────
+      const COLS = 8, ROWS = 9;
+      const STATES = {
+        idle:            { row: 0, frames: [{c:0,d:280},{c:1,d:110},{c:2,d:110},{c:3,d:140},{c:4,d:140},{c:5,d:320}], slow: 6 },
+        'running-right': { row: 1, count: 8, dur: 120, last: 220 },
+        'running-left':  { row: 2, count: 8, dur: 120, last: 220 },
+        waving:          { row: 3, count: 4, dur: 140, last: 280 },
+        jumping:         { row: 4, count: 5, dur: 140, last: 280 },
+        failed:          { row: 5, count: 8, dur: 140, last: 240 },
+        waiting:         { row: 6, count: 6, dur: 150, last: 260 },
+        running:         { row: 7, count: 6, dur: 120, last: 220 },
+        review:          { row: 8, count: 6, dur: 150, last: 280 },
+      };
+
+      function buildFrames(s) {
+        const slow = s.slow || 1;
+        if (s.frames) return s.frames.map(f => ({ c: f.c, r: s.row, d: f.d * slow }));
+        return Array.from({ length: s.count }, (_, i) => ({
+          c: i, r: s.row, d: i === s.count - 1 ? s.last : s.dur,
+        }));
+      }
+      function pos(c, r) {
+        return `${c / (COLS - 1) * 100}% ${r / (ROWS - 1) * 100}%`;
+      }
+
+      // ── Animation ──────────────────────────────────────────────────────────
+      let stateTimer = null;
+      let currentState = 'idle';
+
+      function play(stateName) {
+        const key = STATES[stateName] ? stateName : 'idle';
+        if (key === currentState && stateTimer) return; // already playing
+        currentState = key;
+        if (stateTimer) { clearTimeout(stateTimer); stateTimer = null; }
+        const s = STATES[key];
+        const frames = buildFrames(s);
+        let i = 0;
+        function tick() {
+          const f = frames[i % frames.length];
+          petEl.style.backgroundPosition = pos(f.c, f.r);
+          i++;
+          stateTimer = setTimeout(tick, f.d);
+        }
+        tick();
+      }
+
+      // ── Bubble ─────────────────────────────────────────────────────────────
+      let bubbleHideTimer = null;
+      let lastBubbleCounter = -1;
+
+      function showBubble(text) {
+        bubbleEl.textContent = text;
+        bubbleEl.classList.add('visible');
+        if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
+        bubbleHideTimer = setTimeout(() => {
+          bubbleEl.classList.remove('visible');
+        }, 5000);
+      }
+
+      // ── Sidecar polling ────────────────────────────────────────────────────
+      let sidecarPort = 0;
+      let lastStateCounter = -1;
+
+      async function pollState() {
+        if (!sidecarPort) return;
+        try {
+          // 3s timeout — a hung sidecar should not block the poll loop
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 3000);
+          const r = await fetch(`http://localhost:${sidecarPort}/state`, { signal: ctrl.signal });
+          clearTimeout(t);
+          if (!r.ok) return;
+          const data = await r.json();
+          if (data.counter !== lastStateCounter) {
+            lastStateCounter = data.counter;
+            const newState = data.state || 'idle';
+            play(newState);
+            setDebug(`${petName} [${newState}]`);
+          }
+        } catch {}
+      }
+
+      async function pollBubble() {
+        if (!sidecarPort) return;
+        try {
+          // 3s timeout — mirrors pollState
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 3000);
+          const r = await fetch(`http://localhost:${sidecarPort}/bubble`, { signal: ctrl.signal });
+          clearTimeout(t);
+          if (!r.ok) return;
+          const data = await r.json();
+          if (data.counter !== lastBubbleCounter && data.text) {
+            lastBubbleCounter = data.counter;
+            showBubble(data.text);
+          }
+        } catch {}
+      }
+
+      // ── Boot ───────────────────────────────────────────────────────────────
+      let petName = '';
+
+      async function boot() {
+        setDebug('loading pet…');
+        try {
+          const pet = await invoke('get_active_pet');
+          if (!pet) { setDebug('no pet installed'); return; }
+          petName = pet.name;
+          setDebug(petName);
+
+          const b64 = await invoke('read_file_as_base64', { path: pet.sprite_path });
+          if (!b64) { setDebug('sprite load failed'); return; }
+          const ext = pet.sprite_path.toLowerCase().endsWith('.png') ? 'png' : 'webp';
+          petEl.style.backgroundImage = `url('data:image/${ext};base64,${b64}')`;
+          play('idle');
+
+          // Sidecar boot (non-blocking — pet renders even if sidecar fails)
+          setDebug(`${petName} [spawning…]`);
+          try {
+            sidecarPort = await invoke('spawn_sidecar');
+            setDebug(`${petName} [:${sidecarPort}]`);
+            // Start polling
+            setInterval(pollState,  3000);
+            setInterval(pollBubble, 2000);
+            // Immediate first poll
+            pollState();
+            pollBubble();
+          } catch (se) {
+            setDebug(`${petName} (no sidecar: ${String(se).slice(0, 20)})`);
+          }
+        } catch (e) {
+          setDebug(`ERR: ${String(e).slice(0, 50)}`);
+          console.error(e);
+        }
+      }
+
+      // ── Drag ───────────────────────────────────────────────────────────────
+      petEl.addEventListener('mousedown', async () => {
+        petEl.classList.add('dragging');
+        try { await window.__TAURI__.window.getCurrentWindow().startDragging(); } catch {}
+        petEl.classList.remove('dragging');
+      });
+
+      // ── Right-click → quit ─────────────────────────────────────────────────
+      window.addEventListener('contextmenu', async e => {
+        e.preventDefault();
+        try { await invoke('stop_sidecar'); } catch {}
+        try { await invoke('quit_app'); }    catch {}
+      });
+
+      boot();
+    }
+  </script>
+</body>
+</html>
