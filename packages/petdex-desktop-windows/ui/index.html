@@ -5,241 +5,228 @@
   <title>Petdex</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
     html, body {
       background: transparent;
-      width: 100vw; height: 100vh;
+      width: 100vw;
+      height: 100vh;
       overflow: hidden;
-      user-select: none; -webkit-user-select: none;
+      user-select: none;
+      -webkit-user-select: none;
     }
-    .stage {
+
+    #root {
       position: fixed;
-      top: 34px; left: 8px; /* 34px = Windows taskbar inset so pet sits above shelf */
-      pointer-events: none;
-    }
-    .pet {
-      aspect-ratio: 192 / 208; /* native spritesheet cell size (192×208 px) */
-      width: 4.5rem;            /* ~72px display size, scales with DPI */
-      image-rendering: pixelated;
-      background-repeat: no-repeat;
-      background-size: 800% 900%; /* COLS×100% ROWS×100% = 8 cols × 9 rows */
-      background-position: 0% 0%;
-      pointer-events: auto;
+      bottom: 0;
+      left: 0;
       cursor: grab;
     }
-    .pet.dragging { cursor: grabbing; }
+    #root:active { cursor: grabbing; }
 
-    /* Speech bubble — anchored above the pet */
+    /* Verbatim from src/app/globals.css — .pet-sprite-frame and .pet-sprite.
+       background-image uses var(--sprite-url) which we set to the base64
+       data URI injected at runtime via read_file_as_base64. */
+    .pet-sprite-frame {
+      --pet-scale: 1;
+      width: calc(192px * var(--pet-scale));
+      height: calc(208px * var(--pet-scale));
+      overflow: hidden;
+      /* Promote to its own paint layer so the browser does not evict the
+         WebP decode buffer when the window is off-screen. */
+      contain: layout paint;
+    }
+
+    .pet-sprite {
+      --sprite-row: 0;
+      --sprite-frames: 6;
+      --sprite-duration: 1100ms;
+      --sprite-y: calc(var(--sprite-row) * -208px);
+      --sprite-end-x: calc(var(--sprite-frames) * -192px);
+      width: 192px;
+      height: 208px;
+      background-image: var(--sprite-url);
+      background-repeat: no-repeat;
+      background-size: 1536px 1872px;
+      image-rendering: pixelated;
+      /* translateZ(0) forces GPU-composited layer so animation stays
+         on the compositor thread instead of being re-rasterized. */
+      transform: scale(var(--pet-scale)) translateZ(0);
+      transform-origin: top left;
+      will-change: background-position;
+      animation: pet-state var(--sprite-duration) steps(var(--sprite-frames)) infinite;
+    }
+
+    @keyframes pet-state {
+      from { background-position: 0 var(--sprite-y); }
+      to   { background-position: var(--sprite-end-x) var(--sprite-y); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .pet-sprite { animation: none; }
+    }
+
     #bubble {
-      position: fixed;
-      top: 4px; left: 4px;
-      background: rgba(255,255,255,0.93);
-      color: #1a1a1a;
-      font: 10px/1.4 system-ui, -apple-system, sans-serif;
-      padding: 5px 8px;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.93);
+      color: #111;
+      font: 11px/1.4 system-ui, sans-serif;
+      padding: 6px 10px;
       border-radius: 8px;
-      max-width: 128px;
+      max-width: 180px;
       word-wrap: break-word;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-      pointer-events: none;
-      white-space: pre-wrap;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
       opacity: 0;
       transition: opacity 0.25s ease;
+      pointer-events: none;
+      white-space: pre-wrap;
     }
     #bubble.visible { opacity: 1; }
-    /* Tail pointing down toward the pet */
-    #bubble::after {
-      content: '';
-      position: absolute;
-      bottom: -6px; left: 16px;
-      border: 6px solid transparent;
-      border-top-color: rgba(255,255,255,0.93);
-      border-bottom: 0;
-    }
 
     #debug {
-      position: fixed; bottom: 2px; left: 4px;
-      font: 8px monospace; color: rgba(255,255,255,0.4);
+      position: fixed;
+      top: 2px;
+      left: 2px;
+      font: 9px monospace;
+      color: rgba(255, 255, 255, 0.45);
       pointer-events: none;
-      max-width: 136px; overflow: hidden; white-space: nowrap;
     }
   </style>
 </head>
 <body>
-  <div id="bubble"></div>
-  <div class="stage">
-    <div class="pet" id="pet"></div>
+  <div id="root">
+    <div id="bubble"></div>
+    <div
+      class="pet-sprite-frame"
+      id="sprite-frame"
+      role="img"
+      aria-label="Petdex pet"
+      style="--pet-scale: 1"
+    >
+      <div class="pet-sprite" id="sprite"></div>
+    </div>
   </div>
-  <div id="debug">init</div>
+  <div id="debug">loading...</div>
 
-  <script>
-    const debugEl  = document.getElementById('debug');
-    const bubbleEl = document.getElementById('bubble');
-    const petEl    = document.getElementById('pet');
+<script type="module">
+const { invoke } = window.__TAURI__.core;
+const { getCurrentWindow } = window.__TAURI__.window;
 
-    window.onerror = (msg, _src, line) => setDebug(`ERR L${line}: ${msg}`);
-    function setDebug(msg) { debugEl.textContent = msg; }
+// Verbatim from src/lib/pet-states.ts
+const PET_STATES = {
+  "idle":          { row: 0, frames: 6, durationMs: 1100 },
+  "running-right": { row: 1, frames: 8, durationMs: 1060 },
+  "running-left":  { row: 2, frames: 8, durationMs: 1060 },
+  "waving":        { row: 3, frames: 4, durationMs:  700 },
+  "jumping":       { row: 4, frames: 5, durationMs:  840 },
+  "failed":        { row: 5, frames: 8, durationMs: 1220 },
+  "waiting":       { row: 6, frames: 6, durationMs: 1010 },
+  "running":       { row: 7, frames: 6, durationMs:  820 },
+  "review":        { row: 8, frames: 6, durationMs: 1030 },
+};
 
-    if (!window.__TAURI__) {
-      setDebug('NO __TAURI__');
-    } else {
-      main();
-    }
+const DEFAULT_STATE = "idle";
 
-    function main() {
-      const invoke = window.__TAURI__.core.invoke;
+let sidecarPort = 0;
+let lastStateCounter = 0;
+let lastBubbleCounter = 0;
+let bubbleTimer = null;
 
-      // ── Spritesheet constants (same as macOS Zig reference) ────────────────
-      const COLS = 8, ROWS = 9;
-      const STATES = {
-        idle:            { row: 0, frames: [{c:0,d:280},{c:1,d:110},{c:2,d:110},{c:3,d:140},{c:4,d:140},{c:5,d:320}], slow: 6 },
-        'running-right': { row: 1, count: 8, dur: 120, last: 220 },
-        'running-left':  { row: 2, count: 8, dur: 120, last: 220 },
-        waving:          { row: 3, count: 4, dur: 140, last: 280 },
-        jumping:         { row: 4, count: 5, dur: 140, last: 280 },
-        failed:          { row: 5, count: 8, dur: 140, last: 240 },
-        waiting:         { row: 6, count: 6, dur: 150, last: 260 },
-        running:         { row: 7, count: 6, dur: 120, last: 220 },
-        review:          { row: 8, count: 6, dur: 150, last: 280 },
-      };
+function applyState(stateId) {
+  const s = PET_STATES[stateId] ?? PET_STATES[DEFAULT_STATE];
+  const sprite = document.getElementById("sprite");
+  sprite.style.setProperty("--sprite-row", s.row);
+  sprite.style.setProperty("--sprite-frames", s.frames);
+  sprite.style.setProperty("--sprite-duration", `${s.durationMs}ms`);
+}
 
-      function buildFrames(s) {
-        const slow = s.slow || 1;
-        if (s.frames) return s.frames.map(f => ({ c: f.c, r: s.row, d: f.d * slow }));
-        return Array.from({ length: s.count }, (_, i) => ({
-          c: i, r: s.row, d: i === s.count - 1 ? s.last : s.dur,
-        }));
-      }
-      function pos(c, r) {
-        return `${c / (COLS - 1) * 100}% ${r / (ROWS - 1) * 100}%`;
-      }
+async function boot() {
+  try {
+    const pet = await invoke("get_active_pet");
+    if (!pet) { dbg("no pet found"); return; }
 
-      // ── Animation ──────────────────────────────────────────────────────────
-      let stateTimer = null;
-      let currentState = 'idle';
+    const b64 = await invoke("read_file_as_base64", { path: pet.sprite_path });
+    const ext = pet.sprite_path.endsWith(".png") ? "png" : "webp";
+    document.getElementById("sprite").style.setProperty(
+      "--sprite-url",
+      `url("data:image/${ext};base64,${b64}")`
+    );
+    applyState(DEFAULT_STATE);
+    dbg(pet.name);
 
-      function play(stateName) {
-        const key = STATES[stateName] ? stateName : 'idle';
-        if (key === currentState && stateTimer) return; // already playing
-        currentState = key;
-        if (stateTimer) { clearTimeout(stateTimer); stateTimer = null; }
-        const s = STATES[key];
-        const frames = buildFrames(s);
-        let i = 0;
-        function tick() {
-          const f = frames[i % frames.length];
-          petEl.style.backgroundPosition = pos(f.c, f.r);
-          i++;
-          stateTimer = setTimeout(tick, f.d);
-        }
-        tick();
-      }
+    await bootSidecar();
+  } catch (e) {
+    dbg(`err: ${String(e).slice(0, 40)}`);
+    console.error(e);
+  }
+}
 
-      // ── Bubble ─────────────────────────────────────────────────────────────
-      let bubbleHideTimer = null;
-      let lastBubbleCounter = -1;
+async function bootSidecar() {
+  try {
+    sidecarPort = await invoke("spawn_sidecar");
+    dbg(`${document.getElementById("debug").textContent.split(" ")[0]} :${sidecarPort}`);
+    setInterval(pollState, 3000);
+    setInterval(pollBubble, 2000);
+  } catch (e) {
+    console.warn("sidecar unavailable:", e);
+  }
+}
 
-      function showBubble(text) {
-        bubbleEl.textContent = text;
-        bubbleEl.classList.add('visible');
-        if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
-        bubbleHideTimer = setTimeout(() => {
-          bubbleEl.classList.remove('visible');
-        }, 5000);
-      }
+async function pollState() {
+  if (!sidecarPort) return;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const r = await fetch(`http://localhost:${sidecarPort}/state`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.counter === lastStateCounter) return;
+    lastStateCounter = data.counter;
+    applyState(data.state ?? DEFAULT_STATE);
+  } catch {}
+}
 
-      // ── Sidecar polling ────────────────────────────────────────────────────
-      let sidecarPort = 0;
-      let lastStateCounter = -1;
+async function pollBubble() {
+  if (!sidecarPort) return;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const r = await fetch(`http://localhost:${sidecarPort}/bubble`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.counter === lastBubbleCounter || !data.text) return;
+    lastBubbleCounter = data.counter;
+    showBubble(data.text);
+  } catch {}
+}
 
-      async function pollState() {
-        if (!sidecarPort) return;
-        try {
-          // 3s timeout — a hung sidecar should not block the poll loop
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 3000);
-          const r = await fetch(`http://localhost:${sidecarPort}/state`, { signal: ctrl.signal });
-          clearTimeout(t);
-          if (!r.ok) return;
-          const data = await r.json();
-          if (data.counter !== lastStateCounter) {
-            lastStateCounter = data.counter;
-            const newState = data.state || 'idle';
-            play(newState);
-            setDebug(`${petName} [${newState}]`);
-          }
-        } catch {}
-      }
+function showBubble(text) {
+  const el = document.getElementById("bubble");
+  el.textContent = text;
+  el.classList.add("visible");
+  if (bubbleTimer) clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(() => el.classList.remove("visible"), 5000);
+}
 
-      async function pollBubble() {
-        if (!sidecarPort) return;
-        try {
-          // 3s timeout — mirrors pollState
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 3000);
-          const r = await fetch(`http://localhost:${sidecarPort}/bubble`, { signal: ctrl.signal });
-          clearTimeout(t);
-          if (!r.ok) return;
-          const data = await r.json();
-          if (data.counter !== lastBubbleCounter && data.text) {
-            lastBubbleCounter = data.counter;
-            showBubble(data.text);
-          }
-        } catch {}
-      }
+document.getElementById("root").addEventListener("mousedown", async () => {
+  try { await getCurrentWindow().startDragging(); } catch {}
+});
 
-      // ── Boot ───────────────────────────────────────────────────────────────
-      let petName = '';
+window.addEventListener("contextmenu", async (e) => {
+  e.preventDefault();
+  await invoke("stop_sidecar");
+  await invoke("quit_app");
+});
 
-      async function boot() {
-        setDebug('loading pet…');
-        try {
-          const pet = await invoke('get_active_pet');
-          if (!pet) { setDebug('no pet installed'); return; }
-          petName = pet.name;
-          setDebug(petName);
+function dbg(msg) {
+  document.getElementById("debug").textContent = msg;
+}
 
-          const b64 = await invoke('read_file_as_base64', { path: pet.sprite_path });
-          if (!b64) { setDebug('sprite load failed'); return; }
-          const ext = pet.sprite_path.toLowerCase().endsWith('.png') ? 'png' : 'webp';
-          petEl.style.backgroundImage = `url('data:image/${ext};base64,${b64}')`;
-          play('idle');
-
-          // Sidecar boot (non-blocking — pet renders even if sidecar fails)
-          setDebug(`${petName} [spawning…]`);
-          try {
-            sidecarPort = await invoke('spawn_sidecar');
-            setDebug(`${petName} [:${sidecarPort}]`);
-            // Start polling
-            setInterval(pollState,  3000);
-            setInterval(pollBubble, 2000);
-            // Immediate first poll
-            pollState();
-            pollBubble();
-          } catch (se) {
-            setDebug(`${petName} (no sidecar: ${String(se).slice(0, 20)})`);
-          }
-        } catch (e) {
-          setDebug(`ERR: ${String(e).slice(0, 50)}`);
-          console.error(e);
-        }
-      }
-
-      // ── Drag ───────────────────────────────────────────────────────────────
-      petEl.addEventListener('mousedown', async () => {
-        petEl.classList.add('dragging');
-        try { await window.__TAURI__.window.getCurrentWindow().startDragging(); } catch {}
-        petEl.classList.remove('dragging');
-      });
-
-      // ── Right-click → quit ─────────────────────────────────────────────────
-      window.addEventListener('contextmenu', async e => {
-        e.preventDefault();
-        try { await invoke('stop_sidecar'); } catch {}
-        try { await invoke('quit_app'); }    catch {}
-      });
-
-      boot();
-    }
-  </script>
+boot();
+</script>
 </body>
 </html>
