@@ -15,6 +15,13 @@ const MENU_W: u32 = 480;
 const MENU_H: u32 = 420;
 const MAX_PET_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ACTIVE_BYTES: usize = 4 * 1024;
+const MAX_SLUG_LEN: usize = 64;
+
+const DeepLink = union(enum) {
+    none,
+    activate: []const u8,
+    install: std.ArrayList([]const u8),
+};
 
 const AgentAsset = struct {
     name: []const u8,
@@ -283,6 +290,8 @@ const html_tail =
     \\  let bubbleEl = null;
     \\  let bubbleAvatarEl = null;
     \\  let bubbleTextEl = null;
+    \\  let bubbleWithMenu = false;
+    \\  let stickyLocalBubble = false;
     \\  const AGENT_AVATARS = {
     \\    'claude-code': 'agents/claude-code.svg',
     \\    'codex': 'agents/codex.svg',
@@ -394,6 +403,7 @@ const html_tail =
     \\  }
     \\  async function pollBubble() {
     \\    if (!(window.zero && window.zero.invoke)) return;
+    \\    if (stickyLocalBubble) return;
     \\    // While the picker menu is open, hide the bubble. The
     \\    // picker is a modal flow (user is browsing pets); the
     \\    // bubble is ambient feedback that should defer. Without
@@ -401,6 +411,11 @@ const html_tail =
     \\    // it sideways into the menu — both feel wrong. We bring
     \\    // the bubble back when the picker closes.
     \\    if (menuEl) {
+    \\      if (bubbleWithMenu && bubbleEl && bubbleTextEl && bubbleTextEl.textContent) {
+    \\        positionBubbleNearPet(bubbleEl);
+    \\        bubbleEl.style.opacity = '1';
+    \\        return;
+    \\      }
     \\      if (bubbleEl) bubbleEl.style.opacity = '0';
     \\      return;
     \\    }
@@ -459,24 +474,77 @@ const html_tail =
     \\  // set_active when it finishes. The current pet stays visible
     \\  // throughout so there's no empty-stage flash.
     \\  let incomingUrlPolling = false;
+    \\  const MIN_INSTALL_BUBBLE_MS = 1200;
+    \\  const SUCCESS_BUBBLE_BEFORE_RELOAD_MS = 900;
+    \\  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+    \\  async function showLocalBubbleFor(ms, text) {
+    \\    showLocalBubble(text);
+    \\    await sleep(ms);
+    \\  }
+    \\  function installReportNote(rep) {
+    \\    if (!rep || typeof rep !== 'object') return '';
+    \\    const parts = [];
+    \\    if (Array.isArray(rep.missing) && rep.missing.length)
+    \\      parts.push(rep.missing.length + ' skipped (not found)');
+    \\    if (Array.isArray(rep.failed) && rep.failed.length)
+    \\      parts.push(rep.failed.length + ' failed to download');
+    \\    if (!parts.length) return '';
+    \\    return parts.join('; ') + '. ';
+    \\  }
     \\  function showLocalBubble(text) {
     \\    const el = ensureBubble();
     \\    setBubbleContent(text, null);
     \\    positionBubbleNearPet(el);
     \\    el.style.opacity = '1';
     \\  }
+    \\  async function holdLocalBubble(ms, text) {
+    \\    showLocalBubble(text);
+    \\    stickyLocalBubble = true;
+    \\    await sleep(ms);
+    \\    stickyLocalBubble = false;
+    \\  }
+    \\  async function showInstallPetError(r, installHint) {
+    \\    const err = (r && r.error) || 'unknown';
+    \\    let rep = r && r.install_report;
+    \\    if (typeof rep === 'string') {
+    \\      try { rep = JSON.parse(rep); } catch (_) { rep = null; }
+    \\    }
+    \\    const note = (r && r.issue_note) || installReportNote(rep);
+    \\    const cmd = 'npx petdex@latest install ' + installHint;
+    \\    try { window.zero.invoke('petdex.set_mascot_state', { state: 'failed' }); } catch (_) {}
+    \\    let text;
+    \\    if (err === 'cli_not_persisted') text = 'Run: npx petdex@latest init';
+    \\    else if (err === 'no_home') text = 'No HOME env. Run: ' + cmd;
+    \\    else if (err === 'node_not_found') text = 'Node.js not found. Install from nodejs.org or via brew install node.';
+    \\    else if (err === 'abnormal_exit') text = note + 'petdex install crashed. Try terminal: ' + cmd;
+    \\    else if (err.indexOf('exit_') === 0) text = note ? note + 'Try: ' + cmd : 'Install failed (' + err + '). Try: ' + cmd;
+    \\    else if (err.indexOf('spawn_') === 0) text = 'Install spawn failed (' + err + '). Try: ' + cmd;
+    \\    else text = 'Install failed: ' + err;
+    \\    await holdLocalBubble(1000, text);
+    \\  }
+    \\  async function showInstallCrashed() {
+    \\    try { window.zero.invoke('petdex.set_mascot_state', { state: 'failed' }); } catch (_) {}
+    \\    await holdLocalBubble(1000, 'Install crashed');
+    \\  }
     \\  async function activateOrInstall(slug) {
     \\    if (!(window.zero && window.zero.invoke)) return;
+    \\    try { closeMenu(); } catch (_) {}
     \\    try {
     \\      await window.zero.invoke('petdex.set_active', { slug });
+    \\      try { await window.zero.invoke('petdex.refresh_pets', {}); } catch (_) {}
     \\      location.reload();
     \\      return;
     \\    } catch (_) {}
     \\    // First attempt failed (most likely "slug not installed").
     \\    // Narrate + shell out to `petdex install <slug>`.
+    \\    const installStarted = Date.now();
     \\    showLocalBubble('Installing ' + slug + '…');
     \\    try {
     \\      const r = await window.zero.invoke('petdex.install_pet', { slug });
+    \\      const installElapsed = Date.now() - installStarted;
+    \\      if (installElapsed < MIN_INSTALL_BUBBLE_MS) {
+    \\        await sleep(MIN_INSTALL_BUBBLE_MS - installElapsed);
+    \\      }
     \\      if (r && r.ok) {
     \\        // Install succeeded. Try activate; one retry after 500ms
     \\        // covers the race where set_active runs before the freshly
@@ -487,62 +555,68 @@ const html_tail =
     \\        for (let attempt = 0; attempt < 2; attempt++) {
     \\          try {
     \\            await window.zero.invoke('petdex.set_active', { slug });
+    \\            try { await window.zero.invoke('petdex.refresh_pets', {}); } catch (_) {}
+    \\            await showLocalBubbleFor(SUCCESS_BUBBLE_BEFORE_RELOAD_MS, installReportNote(r.install_report) + 'Showing ' + slug + '.');
     \\            location.reload();
     \\            return;
     \\          } catch (e) {
     \\            if (attempt === 0) {
-    \\              await new Promise(r => setTimeout(r, 500));
+    \\              await sleep(500);
     \\              continue;
     \\            }
-    \\            // Both attempts failed. The sprite is on disk but the
-    \\            // desktop's pets_roots cache was built at startup and
-    \\            // doesn't see the new dir. Tell the user how to recover.
-    \\            showLocalBubble('Installed. Restart Petdex to use ' + slug);
+    \\            try { await window.zero.invoke('petdex.refresh_pets', {}); } catch (_) {}
+    \\            showLocalBubble(installReportNote(r.install_report) + 'Installed. Right-click to switch to ' + slug);
     \\            return;
     \\          }
     \\        }
     \\        return;
     \\      }
-    \\      // install_pet returned ok:false — error code is in r.error.
-    \\      // Map the CLI's exit codes to specific guidance instead of
-    \\      // the previous one-size "Install failed" that left users
-    \\      // (Hunter, 2026-05-11) with no actionable next step.
-    \\      const err = (r && r.error) || 'unknown';
-    \\      // Reflect the failure on the mascot sprite so the user sees
-    \\      // the dejected face in addition to reading the bubble. The
-    \\      // sidecar's state queue auto-reverts to idle after duration
-    \\      // expires, so we don't need cleanup logic here.
-    \\      try { window.zero.invoke('petdex.set_mascot_state', { state: 'failed' }); } catch (_) {}
-    \\      if (err === 'cli_not_persisted') {
-    \\        showLocalBubble('Run: npx petdex@latest init');
-    \\      } else if (err === 'no_home') {
-    \\        showLocalBubble('No HOME env. Run: npx petdex@latest install ' + slug);
-    \\      } else if (err === 'node_not_found') {
-    \\        // Sidecar's PATH-aware lookup also failed — node isn't on
-    \\        // PATH AND not in any of the version-manager default
-    \\        // locations we probe. User needs to install node or fix
-    \\        // their PATH.
-    \\        showLocalBubble('Node.js not found. Install from nodejs.org or via brew install node.');
-    \\      } else if (err === 'abnormal_exit') {
-    \\        showLocalBubble('petdex install crashed. Try terminal: npx petdex@latest install ' + slug);
-    \\      } else if (err.indexOf('exit_') === 0) {
-    \\        // Most common: slug not in manifest, or network error during
-    \\        // download. exit_1 covers both (the CLI doesn't differentiate
-    \\        // today). Direct the user to the terminal where stderr will
-    \\        // tell them which.
-    \\        showLocalBubble('Install failed (' + err + '). Try: npx petdex@latest install ' + slug);
-    \\      } else if (err.indexOf('spawn_') === 0) {
-    \\        // spawn_FileNotFound used to leak through as a bare
-    \\        // FileNotFound from std.process.spawn. Now we prefix with
-    \\        // spawn_ so the mapping is unambiguous.
-    \\        showLocalBubble('Install spawn failed (' + err + '). Try: npx petdex@latest install ' + slug);
-    \\      } else {
-    \\        showLocalBubble('Install failed: ' + err);
-    \\      }
+    \\      await showInstallPetError(r, slug);
     \\    } catch (e) {
-    \\      try { window.zero.invoke('petdex.set_mascot_state', { state: 'failed' }); } catch (_) {}
-    \\      showLocalBubble('Install crashed');
+    \\      await showInstallCrashed();
     \\    }
+    \\  }
+    \\  async function installBatch(slugs) {
+    \\    if (!(window.zero && window.zero.invoke) || !slugs || slugs.length === 0) return;
+    \\    try { closeMenu(); } catch (_) {}
+    \\    const label = slugs.length === 1 ? slugs[0] : slugs.length + ' pets';
+    \\    const installStarted = Date.now();
+    \\    showLocalBubble('Installing ' + label + '…');
+    \\    try {
+    \\      const r = await window.zero.invoke('petdex.install_pet', { slugs: slugs.join(',') });
+    \\      const installElapsed = Date.now() - installStarted;
+    \\      if (installElapsed < MIN_INSTALL_BUBBLE_MS) {
+    \\        await sleep(MIN_INSTALL_BUBBLE_MS - installElapsed);
+    \\      }
+    \\      if (r && r.ok) {
+    \\        const issues = (r.issue_note || '');
+    \\        const n = typeof r.installed_count === 'number' ? r.installed_count : slugs.length;
+    \\        if (n === 0) {
+    \\          await holdLocalBubble(1000, issues + 'No pets installed.');
+    \\          return;
+    \\        }
+    \\        try { await window.zero.invoke('petdex.refresh_pets', {}); } catch (_) {}
+    \\        const summary = n === 1 ? 'Installed 1 pet' : 'Installed ' + n + ' pets';
+    \\        if (issues) await holdLocalBubble(1000, issues + summary);
+    \\        else showLocalBubble(summary);
+    \\        await sleep(1000);
+    \\        try { sessionStorage.setItem('petdex-post-install', '1'); } catch (_) {}
+    \\        location.reload();
+    \\        return;
+    \\      }
+    \\      await showInstallPetError(r, slugs.join(' '));
+    \\    } catch (e) {
+    \\      await showInstallCrashed();
+    \\    }
+    \\  }
+    \\  async function handleDeepLink(r) {
+    \\    if (!r) return;
+    \\    if (r.kind === 'install' && Array.isArray(r.slugs) && r.slugs.length > 0) {
+    \\      await installBatch(r.slugs);
+    \\      return;
+    \\    }
+    \\    const slug = (r.kind === 'activate' && r.slug) ? r.slug : (typeof r.slug === 'string' ? r.slug : '');
+    \\    if (slug) await activateOrInstall(slug);
     \\  }
     \\  async function pollIncomingUrl() {
     \\    if (incomingUrlPolling) return;
@@ -550,8 +624,7 @@ const html_tail =
     \\    incomingUrlPolling = true;
     \\    try {
     \\      const r = await window.zero.invoke('petdex.read_incoming_url', {});
-    \\      if (!r || typeof r.slug !== 'string' || !r.slug) return;
-    \\      await activateOrInstall(r.slug);
+    \\      await handleDeepLink(r);
     \\    } catch (e) {} finally {
     \\      incomingUrlPolling = false;
     \\    }
@@ -567,7 +640,7 @@ const html_tail =
     \\    // what's firing this event, and we don't want to chase it
     \\    // (would shove the pet around mid-modal). pollBubble is
     \\    // also paused while menuEl exists.
-    \\    if (menuEl) return;
+    \\    if (menuEl && !bubbleWithMenu) return;
     \\    if (bubbleEl && bubbleEl.style.opacity === '1') positionBubbleNearPet(bubbleEl);
     \\  });
     \\
@@ -834,7 +907,13 @@ const html_tail =
     \\    try { await window.zero.invoke('zero-native.window.resize', { width: w, height: h, anchor: 'top-left' }); } catch (e) {}
     \\  }
     \\  function closeMenu() {
+    \\    const dismissPrompt = bubbleWithMenu;
+    \\    bubbleWithMenu = false;
     \\    if (menuEl) { menuEl.remove(); menuEl = null; }
+    \\    if (dismissPrompt && bubbleEl) {
+    \\      bubbleEl.style.opacity = '0';
+    \\      if (bubbleTextEl) bubbleTextEl.textContent = '';
+    \\    }
     \\    const data = window.__PETDEX__ || {};
     \\    if (data.compactWidth && data.compactHeight) resizeWindowTo(data.compactWidth, data.compactHeight);
     \\  }
@@ -844,6 +923,7 @@ const html_tail =
     \\    closeMenu();
     \\    try {
     \\      await window.zero.invoke('petdex.set_active', { slug });
+    \\      try { await window.zero.invoke('petdex.refresh_pets', {}); } catch (_) {}
     \\      location.reload();
     \\    } catch (e) {}
     \\  }
@@ -946,7 +1026,7 @@ const html_tail =
     \\  }
     \\  let virtualGrid = null;
     \\  function openMenu() {
-    \\    if (menuEl) { menuEl.remove(); menuEl = null; }
+    \\    if (menuEl) closeMenu();
     \\    if (virtualGrid) { virtualGrid.dispose(); virtualGrid = null; }
     \\    const data = window.__PETDEX__ || { pets: [], active: null };
     \\    // Snapshot pet position BEFORE resize triggers any layout shift.
@@ -1024,6 +1104,12 @@ const html_tail =
     \\    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
     \\    setTimeout(() => input.focus(), 0);
     \\  }
+    \\  pet.addEventListener('click', (e) => {
+    \\    if (menuEl && bubbleWithMenu) {
+    \\      e.stopPropagation();
+    \\      closeMenu();
+    \\    }
+    \\  });
     \\  pet.addEventListener('contextmenu', (e) => {
     \\    e.preventDefault();
     \\    e.stopImmediatePropagation();
@@ -1036,6 +1122,14 @@ const html_tail =
     \\  document.addEventListener('click', (e) => {
     \\    if (menuEl && !menuEl.contains(e.target) && e.target !== pet) closeMenu();
     \\  }, true);
+    \\  try {
+    \\    if (sessionStorage.getItem('petdex-post-install')) {
+    \\      sessionStorage.removeItem('petdex-post-install');
+    \\      bubbleWithMenu = true;
+    \\      showLocalBubble('Switch active pet?');
+    \\      openMenu();
+    \\    }
+    \\  } catch (_) {}
     \\})();
     \\</script>
     \\</body>
@@ -1229,7 +1323,7 @@ const PetdexState = struct {
     // having to re-resolve sidecar_dir or rebuild the env map.
     sidecar_dir: []u8,
     env_map: *std.process.Environ.Map,
-    bridge_handlers: [11]zero_native.BridgeHandler = undefined,
+    bridge_handlers: [12]zero_native.BridgeHandler = undefined,
 
     fn deinit(self: *PetdexState) void {
         self.allocator.free(self.config_dir);
@@ -1247,6 +1341,7 @@ const PetdexState = struct {
             .{ .name = "petdex.read_runtime_bubble", .context = self, .invoke_fn = readRuntimeBubbleCmd },
             .{ .name = "petdex.read_incoming_url", .context = self, .invoke_fn = readIncomingUrlCmd },
             .{ .name = "petdex.install_pet", .context = self, .invoke_fn = installPetCmd },
+            .{ .name = "petdex.refresh_pets", .context = self, .invoke_fn = refreshPetsCmd },
             .{ .name = "petdex.read_update_info", .context = self, .invoke_fn = readUpdateInfoCmd },
             .{ .name = "petdex.read_init_status", .context = self, .invoke_fn = readInitStatusCmd },
             .{ .name = "petdex.trigger_update", .context = self, .invoke_fn = triggerUpdateCmd },
@@ -1291,24 +1386,31 @@ const PetdexState = struct {
     }
 
     // Read + consume the incoming-url.txt the AppleEvent handler writes.
-    // Returns {slug:"<slug>"} on a valid URL, or {slug:""} otherwise.
-    // Always deletes the file after read so re-polling doesn't see
-    // stale URLs.
+    // Returns {kind, slug, slugs?} for the WebView. Always deletes the file
+    // after read so re-polling doesn't see stale URLs.
     fn readIncomingUrlCmd(context: *anyopaque, invocation: zero_native.bridge.Invocation, output: []u8) anyerror![]const u8 {
         _ = invocation;
         const self: *PetdexState = @ptrCast(@alignCast(context));
         const home = self.env_map.get("HOME") orelse {
-            return std.fmt.bufPrint(output, "{{\"slug\":\"\"}}", .{});
+            return std.fmt.bufPrint(output, "{{\"kind\":\"none\",\"slug\":\"\"}}", .{});
         };
-        const path = try std.fs.path.join(self.allocator, &.{ home, ".petdex-desktop", "runtime", "incoming-url.txt" });
-        defer self.allocator.free(path);
-        const slug_opt = parseIncomingUrlFile(self.allocator, self.io, path) catch null;
-        defer if (slug_opt) |s| self.allocator.free(s);
-        std.Io.Dir.deleteFileAbsolute(self.io, path) catch {};
-        if (slug_opt) |slug| {
-            return std.fmt.bufPrint(output, "{{\"slug\":\"{s}\"}}", .{slug});
+        const runtime_dir = try std.fs.path.join(self.allocator, &.{ home, ".petdex-desktop", "runtime" });
+        defer self.allocator.free(runtime_dir);
+
+        const incoming_path = try std.fs.path.join(self.allocator, &.{ runtime_dir, "incoming-url.txt" });
+        defer self.allocator.free(incoming_path);
+        var deeplink = readDeepLinkFromPath(self.allocator, self.io, incoming_path) catch DeepLink{ .none = {} };
+        std.Io.Dir.deleteFileAbsolute(self.io, incoming_path) catch {};
+
+        if (deeplink == .none) {
+            const pending_path = try std.fs.path.join(self.allocator, &.{ runtime_dir, "pending-deeplink.txt" });
+            defer self.allocator.free(pending_path);
+            deeplink = readDeepLinkFromPath(self.allocator, self.io, pending_path) catch DeepLink{ .none = {} };
+            std.Io.Dir.deleteFileAbsolute(self.io, pending_path) catch {};
         }
-        return std.fmt.bufPrint(output, "{{\"slug\":\"\"}}", .{});
+
+        defer freeDeepLink(self.allocator, deeplink);
+        return try formatDeepLinkJson(self.allocator, deeplink, output);
     }
 
     // Mirror of readRuntimeStateCmd, but reads ~/.petdex/runtime/bubble.json
@@ -1344,7 +1446,12 @@ const PetdexState = struct {
     // zig would mean two places to keep in sync.
     fn installPetCmd(context: *anyopaque, invocation: zero_native.bridge.Invocation, output: []u8) anyerror![]const u8 {
         const self: *PetdexState = @ptrCast(@alignCast(context));
-        const slug = jsonStringField(invocation.request.payload, "slug") orelse return error.MissingSlug;
+        var slugs = try parseInstallSlugsFromPayload(self.allocator, invocation.request.payload);
+        defer {
+            for (slugs.items) |s| self.allocator.free(s);
+            slugs.deinit(self.allocator);
+        }
+        if (slugs.items.len == 0) return error.MissingSlug;
 
         const home = self.env_map.get("HOME") orelse {
             return std.fmt.bufPrint(output, "{{\"ok\":false,\"error\":\"no_home\"}}", .{});
@@ -1368,27 +1475,118 @@ const PetdexState = struct {
         };
         defer self.allocator.free(node_path);
 
-        const argv = &[_][]const u8{ node_path, cli_path, "install", slug };
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.allocator);
+        try argv.appendSlice(self.allocator, &.{ node_path, cli_path, "install" });
+        try argv.appendSlice(self.allocator, slugs.items);
+
+        const runtime_dir = try std.fs.path.join(self.allocator, &.{ home, ".petdex-desktop", "runtime" });
+        defer self.allocator.free(runtime_dir);
+        try ensurePrivateDir(self.allocator, self.io, runtime_dir);
+        const summary_path = try std.fs.path.join(self.allocator, &.{ runtime_dir, "install-machine-summary.json" });
+        defer self.allocator.free(summary_path);
+        std.Io.Dir.deleteFileAbsolute(self.io, summary_path) catch {};
+
+        var child_env = std.process.Environ.Map.init(self.allocator);
+        defer child_env.deinit();
+        {
+            const keys = self.env_map.keys();
+            const vals = self.env_map.values();
+            for (keys, vals) |k, v| {
+                try child_env.put(k, v);
+            }
+        }
+        try child_env.put("PETDEX_INSTALL_MACHINE_SUMMARY_PATH", summary_path);
+
         var child = std.process.spawn(self.io, .{
-            .argv = argv,
+            .argv = argv.items,
             .stdin = .ignore,
             .stdout = .ignore,
             .stderr = .ignore,
+            .environ_map = &child_env,
         }) catch |err| {
             return std.fmt.bufPrint(output, "{{\"ok\":false,\"error\":\"spawn_{s}\"}}", .{@errorName(err)});
         };
         const term = child.wait(self.io) catch |err| {
             return std.fmt.bufPrint(output, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(err)});
         };
+
+        const report_opt = readOptionalInstallMachineReport(self.allocator, self.io, summary_path);
+        defer if (report_opt) |rp| self.allocator.free(rp);
+        std.Io.Dir.deleteFileAbsolute(self.io, summary_path) catch {};
+
+        const disk_installed = countRequestedSlugsOnDisk(self.io, self.pets_roots, slugs.items);
+
         switch (term) {
             .exited => |code| {
                 if (code == 0) {
-                    return std.fmt.bufPrint(output, "{{\"ok\":true}}", .{});
+                    return try formatInstallPetBridgeJson(self.allocator, output, true, null, report_opt, slugs.items.len, disk_installed);
                 }
-                return std.fmt.bufPrint(output, "{{\"ok\":false,\"error\":\"exit_{d}\"}}", .{code});
+                var err_buf: [48]u8 = undefined;
+                const err_tag = std.fmt.bufPrint(&err_buf, "exit_{d}", .{code}) catch "exit_unknown";
+                return try formatInstallPetBridgeJson(self.allocator, output, false, err_tag, report_opt, slugs.items.len, disk_installed);
             },
-            else => return std.fmt.bufPrint(output, "{{\"ok\":false,\"error\":\"abnormal_exit\"}}", .{}),
+            else => {
+                return try formatInstallPetBridgeJson(self.allocator, output, false, "abnormal_exit", report_opt, slugs.items.len, disk_installed);
+            },
         }
+    }
+
+    fn refreshPetsCmd(context: *anyopaque, invocation: zero_native.bridge.Invocation, output: []u8) anyerror![]const u8 {
+        _ = invocation;
+        const self: *PetdexState = @ptrCast(@alignCast(context));
+
+        var pets = try listPetsAcrossRoots(self.allocator, self.io, self.pets_roots);
+        errdefer {
+            for (pets.items) |p| {
+                self.allocator.free(p.slug);
+                self.allocator.free(p.display_name);
+                self.allocator.free(p.root);
+            }
+            pets.deinit(self.allocator);
+        }
+        if (pets.items.len == 0) {
+            return std.fmt.bufPrint(output, "{{\"ok\":false,\"error\":\"no_pets\"}}", .{});
+        }
+
+        const stored_active = try readActiveSlug(self.allocator, self.io, self.config_dir);
+        defer if (stored_active) |s| self.allocator.free(s);
+
+        const active_slug = blk: {
+            if (stored_active) |s| {
+                for (pets.items) |p| {
+                    if (std.mem.eql(u8, p.slug, s)) break :blk s;
+                }
+            }
+            break :blk pets.items[0].slug;
+        };
+
+        const sprite = try loadSpritesheetAcrossRoots(self.allocator, self.io, self.pets_roots, active_slug);
+        defer self.allocator.free(sprite.bytes);
+
+        var root_dir = try std.Io.Dir.openDirAbsolute(self.io, self.asset_root, .{});
+        defer root_dir.close(self.io);
+        try writeFileAll(self.io, root_dir, "spritesheet.webp", sprite.bytes);
+        if (!std.mem.eql(u8, sprite.ext, "webp")) {
+            const sprite_name = if (std.mem.eql(u8, sprite.ext, "png")) "spritesheet.png" else "spritesheet.webp";
+            try writeFileAll(self.io, root_dir, sprite_name, sprite.bytes);
+        }
+
+        const petdex_json = try buildPetdexJson(self.allocator, pets.items, active_slug);
+        defer self.allocator.free(petdex_json);
+        const html_doc = try buildHtml(self.allocator, petdex_json);
+        defer self.allocator.free(html_doc);
+        try writeFileAll(self.io, root_dir, "index.html", html_doc);
+        try copyAllSpritesheets(self.allocator, self.io, self.asset_root, pets.items);
+
+        for (pets.items) |p| {
+            self.allocator.free(p.slug);
+            self.allocator.free(p.display_name);
+            self.allocator.free(p.root);
+        }
+        pets.deinit(self.allocator);
+
+        return std.fmt.bufPrint(output, "{{\"ok\":true,\"active\":\"{s}\"}}", .{active_slug});
     }
 
     fn setActiveCmd(context: *anyopaque, invocation: zero_native.bridge.Invocation, output: []u8) anyerror![]const u8 {
@@ -1628,6 +1826,7 @@ const petdex_command_policies = [_]zero_native.BridgeCommandPolicy{
     .{ .name = "petdex.read_runtime_bubble", .origins = &petdex_origins },
     .{ .name = "petdex.read_incoming_url", .origins = &petdex_origins },
     .{ .name = "petdex.install_pet", .origins = &petdex_origins },
+    .{ .name = "petdex.refresh_pets", .origins = &petdex_origins },
     .{ .name = "petdex.read_update_info", .origins = &petdex_origins },
     .{ .name = "petdex.read_init_status", .origins = &petdex_origins },
     .{ .name = "petdex.trigger_update", .origins = &petdex_origins },
@@ -1644,6 +1843,56 @@ fn jsonStringField(payload: []const u8, key: []const u8) ?[]const u8 {
     return payload[value_start..end];
 }
 
+fn jsonUintField(json: []const u8, key: []const u8) ?usize {
+    var key_buf: [48]u8 = undefined;
+    const needle = std.fmt.bufPrint(&key_buf, "\"{s}\":", .{key}) catch return null;
+    const start = std.mem.indexOf(u8, json, needle) orelse return null;
+    var i = start + needle.len;
+    while (i < json.len and std.ascii.isWhitespace(json[i])) i += 1;
+    if (i >= json.len) return null;
+    var end = i;
+    while (end < json.len and std.ascii.isDigit(json[end])) end += 1;
+    if (end == i) return null;
+    return std.fmt.parseInt(usize, json[i..end], 10) catch null;
+}
+
+// Counts string elements in a JSON array field (e.g. `"missing":["a","b"]`).
+fn jsonStringArrayLength(json: []const u8, key: []const u8) ?usize {
+    var key_buf: [48]u8 = undefined;
+    const needle = std.fmt.bufPrint(&key_buf, "\"{s}\":[", .{key}) catch return null;
+    const start = std.mem.indexOf(u8, json, needle) orelse return null;
+    var i = start + needle.len;
+    while (i < json.len and std.ascii.isWhitespace(json[i])) i += 1;
+    if (i >= json.len or json[i] == ']') return 0;
+    var count: usize = 0;
+    while (i < json.len and json[i] != ']') {
+        if (json[i] == '"') {
+            count += 1;
+            i += 1;
+            while (i < json.len and json[i] != '"') i += 1;
+        }
+        i += 1;
+    }
+    return count;
+}
+
+fn countRequestedSlugsOnDisk(io: std.Io, roots: []const []u8, slugs: []const []const u8) usize {
+    var count: usize = 0;
+    for (slugs) |slug| {
+        var found = false;
+        for (roots) |root_path| {
+            var dir = std.Io.Dir.openDirAbsolute(io, root_path, .{ .iterate = true }) catch continue;
+            defer dir.close(io);
+            if (hasSpritesheet(io, dir, slug)) {
+                found = true;
+                break;
+            }
+        }
+        if (found) count += 1;
+    }
+    return count;
+}
+
 fn readFileAll(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, max_bytes: usize) ![]u8 {
     const stat = try file.stat(io);
     const size: usize = @intCast(stat.size);
@@ -1653,6 +1902,109 @@ fn readFileAll(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, max_
     const read = try file.readPositionalAll(io, buf, 0);
     if (read != size) return error.ShortRead;
     return buf;
+}
+
+fn readOptionalInstallMachineReport(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8 {
+    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer file.close(io);
+    const raw = readFileAll(io, allocator, file, 8192) catch return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    const owned = allocator.dupe(u8, trimmed) catch {
+        allocator.free(raw);
+        return null;
+    };
+    allocator.free(raw);
+    if (owned.len == 0 or owned[0] != '{') {
+        allocator.free(owned);
+        return null;
+    }
+    return owned;
+}
+
+fn resolveInstallOutcome(
+    report: ?[]const u8,
+    requested_count: usize,
+    disk_installed_count: usize,
+) struct { installed: usize, skip: usize } {
+    const installed: usize = blk: {
+        if (report) |r| {
+            if (jsonUintField(r, "installed_count")) |n| break :blk n;
+        }
+        break :blk disk_installed_count;
+    };
+    const skip: usize = blk: {
+        if (report) |r| {
+            if (jsonStringArrayLength(r, "missing")) |m| {
+                if (m > 0) break :blk m;
+            }
+        }
+        if (installed < requested_count) break :blk requested_count - installed;
+        if (disk_installed_count < requested_count) break :blk requested_count - disk_installed_count;
+        break :blk 0;
+    };
+    return .{ .installed = installed, .skip = skip };
+}
+
+fn tryAppendInstallIssueNote(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    skip: usize,
+) !void {
+    if (skip == 0) return;
+    var msg_buf: [64]u8 = undefined;
+    const msg = try std.fmt.bufPrint(
+        &msg_buf,
+        "{d} skipped (not found). ",
+        .{skip},
+    );
+    try buf.appendSlice(allocator, ",\"issue_note\":\"");
+    try appendJsonEscaped(buf, allocator, msg);
+    try buf.appendSlice(allocator, "\"");
+}
+
+fn formatInstallPetBridgeJson(
+    allocator: std.mem.Allocator,
+    output: []u8,
+    ok: bool,
+    err_opt: ?[]const u8,
+    report: ?[]const u8,
+    requested_count: usize,
+    disk_installed_count: usize,
+) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    var num_buf: [24]u8 = undefined;
+    const outcome = resolveInstallOutcome(report, requested_count, disk_installed_count);
+    try buf.appendSlice(allocator, "{\"ok\":");
+    try buf.appendSlice(allocator, if (ok) "true" else "false");
+    if (err_opt) |e| {
+        try buf.appendSlice(allocator, ",\"error\":\"");
+        try appendJsonEscaped(&buf, allocator, e);
+        try buf.appendSlice(allocator, "\"");
+    }
+    const req_str = try std.fmt.bufPrint(&num_buf, "{d}", .{requested_count});
+    try buf.appendSlice(allocator, ",\"requested_count\":");
+    try buf.appendSlice(allocator, req_str);
+    if (report) |r| {
+        try buf.appendSlice(allocator, ",\"install_report\":");
+        try buf.appendSlice(allocator, r);
+    }
+    if (ok) {
+        const inst_str = try std.fmt.bufPrint(&num_buf, "{d}", .{outcome.installed});
+        try buf.appendSlice(allocator, ",\"installed_count\":");
+        try buf.appendSlice(allocator, inst_str);
+    } else if (report) |r| {
+        if (jsonUintField(r, "installed_count")) |installed| {
+            const inst_str = try std.fmt.bufPrint(&num_buf, "{d}", .{installed});
+            try buf.appendSlice(allocator, ",\"installed_count\":");
+            try buf.appendSlice(allocator, inst_str);
+        }
+    }
+    try tryAppendInstallIssueNote(&buf, allocator, outcome.skip);
+    try buf.appendSlice(allocator, "}");
+    if (buf.items.len > output.len) return error.BufferTooSmall;
+    @memcpy(output[0..buf.items.len], buf.items);
+    return output[0..buf.items.len];
 }
 
 fn writeFileAll(io: std.Io, dir: std.Io.Dir, name: []const u8, bytes: []const u8) !void {
@@ -1794,98 +2146,234 @@ fn writeActiveSlug(io: std.Io, config_dir: []const u8, slug: []const u8) !void {
     try writeFileAll(io, dir, "active.json", json_text);
 }
 
-// Read + parse the URL file (no delete — caller decides). Returns
-// the slug on success, null if the file is missing/invalid.
-fn parseIncomingUrlFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?[]u8 {
-    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
-    defer file.close(io);
-    const bytes = readFileAll(io, allocator, file, 1024) catch return null;
-    return parseSlugFromUrl(allocator, bytes) catch null;
-}
-
-// Read + delete the URL written by zero-native's AppleEvent handler.
-// The file lives at ~/.petdex-desktop/runtime/incoming-url.txt and
-// gets created/overwritten every time macOS routes a `petdex://` URL
-// to the app. We delete it after reading so a stale URL from an old
-// session can't override the user's current selection.
-fn readSlugFromUrlFile(allocator: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) !?[]u8 {
-    const home = env.get("HOME") orelse return null;
-    const path = try std.fs.path.join(allocator, &.{ home, ".petdex-desktop", "runtime", "incoming-url.txt" });
-    defer allocator.free(path);
-    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
-    const bytes = readFileAll(io, allocator, file, 1024) catch {
-        file.close(io);
-        return null;
-    };
-    file.close(io);
-    // Delete after reading so stale URLs from prior runs don't apply.
-    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
-    return parseSlugFromUrl(allocator, bytes) catch {
-        allocator.free(bytes);
-        return null;
-    };
-}
-
-fn parseSlugFromUrl(allocator: std.mem.Allocator, raw: []u8) !?[]u8 {
-    defer allocator.free(raw);
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    const prefix = "petdex://";
-    if (trimmed.len <= prefix.len) return null;
-    if (!std.mem.startsWith(u8, trimmed, prefix)) return null;
-    var slug = trimmed[prefix.len..];
-    if (std.mem.endsWith(u8, slug, "/")) slug = slug[0 .. slug.len - 1];
-    if (slug.len == 0 or slug.len > 64) return null;
+fn isValidSlug(slug: []const u8) bool {
+    if (slug.len == 0 or slug.len > MAX_SLUG_LEN) return false;
     for (slug) |ch| {
         const ok = (ch >= 'a' and ch <= 'z') or
             (ch >= 'A' and ch <= 'Z') or
             (ch >= '0' and ch <= '9') or
             ch == '-' or ch == '_';
-        if (!ok) return null;
+        if (!ok) return false;
     }
-    return try allocator.dupe(u8, slug);
+    return true;
 }
 
-// Extract a pet slug from a `petdex://<slug>` URL passed as argv[1].
-// macOS does this when you `open petdex://kebo` — the system parses the
-// scheme registration in Info.plist and forwards the URL to the
-// application, either via apple-event (when already running) or as
-// argv (on cold start). We handle the cold-start path here; the
-// already-running path requires AppleEvent handling we don't have yet.
-//
-// Returns null if no URL arg is present, the scheme doesn't match, or
-// the slug fails the safe-character check (slugs are conservative —
-// alnum + hyphen + underscore so no path traversal or HTML injection
-// can sneak in via the URL).
-fn readSlugFromUrlArg(allocator: std.mem.Allocator, args: std.process.Args) !?[]u8 {
-    var iter = std.process.Args.Iterator.initAllocator(args, allocator) catch return null;
+fn freeDeepLink(allocator: std.mem.Allocator, deeplink: DeepLink) void {
+    switch (deeplink) {
+        .none => {},
+        .activate => |slug| allocator.free(slug),
+        .install => |slugs| {
+            var owned = slugs;
+            for (owned.items) |s| allocator.free(s);
+            owned.deinit(allocator);
+        },
+    }
+}
+
+fn readDeepLinkFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !DeepLink {
+    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return DeepLink{ .none = {} };
+    defer file.close(io);
+    const bytes = readFileAll(io, allocator, file, MAX_ACTIVE_BYTES) catch return DeepLink{ .none = {} };
+    return parseDeepLinkFromUrl(allocator, bytes) catch DeepLink{ .none = {} };
+}
+
+fn readDeepLinkFromUrlFile(allocator: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) !DeepLink {
+    const home = env.get("HOME") orelse return DeepLink{ .none = {} };
+    const path = try std.fs.path.join(allocator, &.{ home, ".petdex-desktop", "runtime", "incoming-url.txt" });
+    defer allocator.free(path);
+    const deeplink = try readDeepLinkFromPath(allocator, io, path);
+    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    return deeplink;
+}
+
+fn readDeepLinkFromUrlArg(allocator: std.mem.Allocator, args: std.process.Args) !DeepLink {
+    var iter = std.process.Args.Iterator.initAllocator(args, allocator) catch return DeepLink{ .none = {} };
     defer iter.deinit();
     var idx: usize = 0;
     while (iter.next()) |arg_z| : (idx += 1) {
-        if (idx == 0) continue; // skip exe path
+        if (idx == 0) continue;
         const arg: []const u8 = arg_z;
         const prefix = "petdex://";
-        if (arg.len <= prefix.len) continue;
-        if (!std.mem.startsWith(u8, arg, prefix)) continue;
-        var slug = arg[prefix.len..];
-        if (std.mem.endsWith(u8, slug, "/")) {
-            slug = slug[0 .. slug.len - 1];
-        }
-        if (slug.len == 0 or slug.len > 64) continue;
-        var safe = true;
-        for (slug) |ch| {
-            const ok = (ch >= 'a' and ch <= 'z') or
-                (ch >= 'A' and ch <= 'Z') or
-                (ch >= '0' and ch <= '9') or
-                ch == '-' or ch == '_';
-            if (!ok) {
-                safe = false;
-                break;
-            }
-        }
-        if (!safe) continue;
-        return try allocator.dupe(u8, slug);
+        if (arg.len <= prefix.len or !std.mem.startsWith(u8, arg, prefix)) continue;
+        const owned = try allocator.dupe(u8, arg);
+        defer allocator.free(owned);
+        return parseDeepLinkFromUrl(allocator, owned) catch DeepLink{ .none = {} };
     }
+    return DeepLink{ .none = {} };
+}
+
+fn parseDeepLinkFromUrl(allocator: std.mem.Allocator, raw: []u8) !DeepLink {
+    defer allocator.free(raw);
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    const prefix = "petdex://";
+    if (trimmed.len <= prefix.len or !std.mem.startsWith(u8, trimmed, prefix)) {
+        return DeepLink{ .none = {} };
+    }
+    var rest = trimmed[prefix.len..];
+    if (std.mem.endsWith(u8, rest, "/")) rest = rest[0 .. rest.len - 1];
+    if (rest.len == 0) return DeepLink{ .none = {} };
+
+    const q_mark = std.mem.indexOfScalar(u8, rest, '?');
+    const path = if (q_mark) |i| rest[0..i] else rest;
+    const query = if (q_mark) |i| rest[i + 1 ..] else "";
+
+    if (std.mem.eql(u8, path, "install")) {
+        return try parseInstallSlugsFromQuery(allocator, query);
+    }
+
+    if (query.len > 0 or std.mem.indexOfScalar(u8, path, '/') != null) {
+        return DeepLink{ .none = {} };
+    }
+    if (!isValidSlug(path)) return DeepLink{ .none = {} };
+    return DeepLink{ .activate = try allocator.dupe(u8, path) };
+}
+
+fn parseInstallSlugsFromQuery(allocator: std.mem.Allocator, query: []const u8) !DeepLink {
+    var slugs: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (slugs.items) |s| allocator.free(s);
+        slugs.deinit(allocator);
+    }
+
+    var pair_iter = std.mem.splitScalar(u8, query, '&');
+    while (pair_iter.next()) |pair| {
+        if (pair.len == 0) continue;
+        if (std.mem.startsWith(u8, pair, "slugs=")) {
+            const value = pair["slugs=".len..];
+            var slug_iter = std.mem.splitScalar(u8, value, ',');
+            while (slug_iter.next()) |part| {
+                const slug = std.mem.trim(u8, part, " \t");
+                try appendInstallSlug(allocator, &slugs, slug);
+            }
+        } else if (std.mem.startsWith(u8, pair, "slug=")) {
+            const value = pair["slug=".len..];
+            var decoded: [MAX_SLUG_LEN + 8]u8 = undefined;
+            const slug = percentDecodeSlug(value, &decoded) orelse continue;
+            try appendInstallSlug(allocator, &slugs, slug);
+        }
+    }
+
+    if (slugs.items.len == 0) return DeepLink{ .none = {} };
+    return DeepLink{ .install = slugs };
+}
+
+fn appendInstallSlug(allocator: std.mem.Allocator, slugs: *std.ArrayList([]const u8), slug: []const u8) !void {
+    if (!isValidSlug(slug)) return;
+    for (slugs.items) |existing| {
+        if (std.mem.eql(u8, existing, slug)) return;
+    }
+    try slugs.append(allocator, try allocator.dupe(u8, slug));
+}
+
+fn hexNibble(c: u8) ?u4 {
+    if (c >= '0' and c <= '9') return @intCast(c - '0');
+    if (c >= 'a' and c <= 'f') return @intCast(c - 'a' + 10);
+    if (c >= 'A' and c <= 'F') return @intCast(c - 'A' + 10);
     return null;
+}
+
+fn percentDecodeSlug(encoded: []const u8, out: []u8) ?[]const u8 {
+    var len: usize = 0;
+    var i: usize = 0;
+    while (i < encoded.len) : (i += 1) {
+        if (encoded[i] == '%' and i + 2 < encoded.len) {
+            const hi = hexNibble(encoded[i + 1]) orelse return null;
+            const lo = hexNibble(encoded[i + 2]) orelse return null;
+            if (len >= out.len) return null;
+            out[len] = @as(u8, hi) * 16 + @as(u8, lo);
+            len += 1;
+            i += 2;
+        } else {
+            if (len >= out.len) return null;
+            out[len] = encoded[i];
+            len += 1;
+        }
+    }
+    return out[0..len];
+}
+
+fn parseInstallSlugsFromPayload(allocator: std.mem.Allocator, payload: []const u8) !std.ArrayList([]const u8) {
+    var slugs: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (slugs.items) |s| allocator.free(s);
+        slugs.deinit(allocator);
+    }
+
+    if (jsonStringField(payload, "slugs")) |csv| {
+        var iter = std.mem.splitScalar(u8, csv, ',');
+        while (iter.next()) |part| {
+            const slug = std.mem.trim(u8, part, " \t");
+            try appendInstallSlug(allocator, &slugs, slug);
+        }
+    }
+    if (slugs.items.len == 0) {
+        if (jsonStringField(payload, "slug")) |slug| {
+            try appendInstallSlug(allocator, &slugs, slug);
+        }
+    }
+    return slugs;
+}
+
+fn formatDeepLinkJson(allocator: std.mem.Allocator, deeplink: DeepLink, output: []u8) ![]const u8 {
+    switch (deeplink) {
+        .none => return std.fmt.bufPrint(output, "{{\"kind\":\"none\",\"slug\":\"\"}}", .{}),
+        .activate => |slug| return std.fmt.bufPrint(output, "{{\"kind\":\"activate\",\"slug\":\"{s}\"}}", .{slug}),
+        .install => |*slug_list| {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(allocator);
+            try buf.appendSlice(allocator, "{\"kind\":\"install\",\"slug\":\"\",\"slugs\":[");
+            for (slug_list.items, 0..) |slug, i| {
+                if (i > 0) try buf.appendSlice(allocator, ",");
+                try buf.appendSlice(allocator, "\"");
+                try appendJsonEscaped(&buf, allocator, slug);
+                try buf.appendSlice(allocator, "\"");
+            }
+            try buf.appendSlice(allocator, "]}");
+            if (buf.items.len > output.len) return error.BufferTooSmall;
+            @memcpy(output[0..buf.items.len], buf.items);
+            return output[0..buf.items.len];
+        },
+    }
+}
+
+fn deepLinkToUrl(allocator: std.mem.Allocator, deeplink: DeepLink) !?[]u8 {
+    switch (deeplink) {
+        .none => return null,
+        .activate => |slug| return try std.fmt.allocPrint(allocator, "petdex://{s}", .{slug}),
+        .install => |*slug_list| {
+            var buf: std.ArrayList(u8) = .empty;
+            errdefer buf.deinit(allocator);
+            try buf.appendSlice(allocator, "petdex://install");
+            for (slug_list.items, 0..) |slug, i| {
+                if (i == 0) {
+                    try buf.appendSlice(allocator, "?");
+                } else {
+                    try buf.appendSlice(allocator, "&");
+                }
+                try buf.appendSlice(allocator, "slug=");
+                try buf.appendSlice(allocator, slug);
+            }
+            const slice = try buf.toOwnedSlice(allocator);
+            return slice;
+        },
+    }
+}
+
+fn writePendingDeepLink(io: std.Io, allocator: std.mem.Allocator, env: *const std.process.Environ.Map, deeplink: DeepLink) !void {
+    const url = try deepLinkToUrl(allocator, deeplink);
+    defer if (url) |u| allocator.free(u);
+    const url_text = url orelse return;
+
+    const home = env.get("HOME") orelse return;
+    const runtime_dir = try std.fs.path.join(allocator, &.{ home, ".petdex-desktop", "runtime" });
+    defer allocator.free(runtime_dir);
+    try ensurePrivateDir(allocator, io, runtime_dir);
+    const path = try std.fs.path.join(allocator, &.{ runtime_dir, "pending-deeplink.txt" });
+    defer allocator.free(path);
+
+    var file = try std.Io.Dir.createFileAbsolute(io, path, .{ .truncate = true });
+    defer file.close(io);
+    try file.writePositionalAll(io, url_text, 0);
 }
 
 // True only if the pet directory contains a readable sprite file.
@@ -2204,7 +2692,7 @@ fn appendJsonEscaped(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: [
     //   - `<` becomes `<` so `</script>` inside a string can never close
     //     the surrounding <script type="application/json"> tag.
     //   - `>` becomes `>` for symmetry against `]]>`-style breakouts.
-    //   - U+2028 (LS) and U+2029 (PS) become  /  because some
+    //   - U+2028 (LS) and U+2029 (PS) become / because some
     //     JS parsers historically treated them as line terminators in
     //     string literals.
     // Pet display names come from user-installed pet.json files so we
@@ -2353,26 +2841,34 @@ pub fn main(init: std.process.Init) !void {
     // URL to ~/.petdex-desktop/runtime/incoming-url.txt before the
     // run loop pumps. We read it here + also check argv as a fallback
     // for direct binary invocations (`./petdex-desktop petdex://kebo`).
-    const url_slug = blk: {
-        const from_file = readSlugFromUrlFile(allocator, init.io, init.environ_map) catch null;
-        if (from_file != null) break :blk from_file;
-        break :blk readSlugFromUrlArg(allocator, init.minimal.args) catch null;
+    const startup_deeplink = blk: {
+        const from_file = readDeepLinkFromUrlFile(allocator, init.io, init.environ_map) catch DeepLink{ .none = {} };
+        if (from_file != .none) break :blk from_file;
+        break :blk readDeepLinkFromUrlArg(allocator, init.minimal.args) catch DeepLink{ .none = {} };
     };
-    defer if (url_slug) |s| allocator.free(s);
-    if (url_slug) |slug| {
-        var found = false;
-        for (pets.items) |p| {
-            if (std.mem.eql(u8, p.slug, slug)) {
-                found = true;
-                break;
+    defer freeDeepLink(allocator, startup_deeplink);
+    switch (startup_deeplink) {
+        .activate => |slug| {
+            var found = false;
+            for (pets.items) |p| {
+                if (std.mem.eql(u8, p.slug, slug)) {
+                    found = true;
+                    break;
+                }
             }
-        }
-        if (found) {
-            try writeActiveSlug(init.io, config_dir, slug);
-            std.debug.print("Activated pet from URL: {s}\n", .{slug});
-        } else {
-            std.debug.print("URL slug '{s}' is not installed; ignoring.\n", .{slug});
-        }
+            if (found) {
+                try writeActiveSlug(init.io, config_dir, slug);
+                std.debug.print("Activated pet from URL: {s}\n", .{slug});
+            } else {
+                try writePendingDeepLink(init.io, allocator, init.environ_map, startup_deeplink);
+                std.debug.print("Queued activate/install for URL slug: {s}\n", .{slug});
+            }
+        },
+        .install => {
+            try writePendingDeepLink(init.io, allocator, init.environ_map, startup_deeplink);
+            std.debug.print("Queued batch install from URL\n", .{});
+        },
+        .none => {},
     }
 
     // Re-read active slug — may have just been overwritten by the URL.
@@ -2809,4 +3305,41 @@ test "listPetsFromDir: oversized pet.json falls back to slug, doesn't fail the l
     try testing.expectEqualStrings("huge", pets.items[0].slug);
     // Display name fell back to slug because pet.json was too big.
     try testing.expectEqualStrings("huge", pets.items[0].display_name);
+}
+
+test "parseDeepLinkFromUrl: single activate slug" {
+    const a = std.testing.allocator;
+    const raw = try a.dupe(u8, "petdex://boba");
+    const dl = try parseDeepLinkFromUrl(a, raw);
+    defer freeDeepLink(a, dl);
+    try std.testing.expect(dl == .activate);
+    try std.testing.expectEqualStrings("boba", dl.activate);
+}
+
+test "parseDeepLinkFromUrl: batch install via repeated slug params" {
+    const a = std.testing.allocator;
+    const raw = try a.dupe(u8, "petdex://install?slug=boba&slug=doraemon");
+    const dl = try parseDeepLinkFromUrl(a, raw);
+    defer freeDeepLink(a, dl);
+    try std.testing.expect(dl == .install);
+    try std.testing.expectEqual(@as(usize, 2), dl.install.items.len);
+    try std.testing.expectEqualStrings("boba", dl.install.items[0]);
+    try std.testing.expectEqualStrings("doraemon", dl.install.items[1]);
+}
+
+test "parseDeepLinkFromUrl: batch install via slugs csv" {
+    const a = std.testing.allocator;
+    const raw = try a.dupe(u8, "petdex://install?slugs=mochi,kebo");
+    const dl = try parseDeepLinkFromUrl(a, raw);
+    defer freeDeepLink(a, dl);
+    try std.testing.expect(dl == .install);
+    try std.testing.expectEqual(@as(usize, 2), dl.install.items.len);
+}
+
+test "parseDeepLinkFromUrl: rejects path with slash" {
+    const a = std.testing.allocator;
+    const raw = try a.dupe(u8, "petdex://foo/bar");
+    const dl = try parseDeepLinkFromUrl(a, raw);
+    defer freeDeepLink(a, dl);
+    try std.testing.expect(dl == .none);
 }
