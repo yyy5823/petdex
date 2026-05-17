@@ -1,7 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 
+import { track } from "@vercel/analytics";
 import {
   Check,
   X as CloseIcon,
@@ -12,7 +14,13 @@ import {
   MoreHorizontal,
   Terminal,
 } from "lucide-react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
+
+import {
+  buildPetdexInstallUrl,
+  isMacDesktop,
+  openPetdexDeepLink,
+} from "@/lib/petdex-desktop-link";
 
 import { CodexLogo } from "@/components/codex-logo";
 
@@ -37,9 +45,15 @@ type Copied = "install" | "link" | null;
 
 export function CollectionActionMenu({ collection }: Props) {
   const t = useTranslations("collectionActionMenu");
+  const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<Copied>(null);
+  const [isMac, setIsMac] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setIsMac(isMacDesktop());
+  }, []);
 
   // Close on outside click + Escape so the menu does not strand itself
   // when the user moves on. Same pattern as PetActionMenu.
@@ -72,6 +86,8 @@ export function CollectionActionMenu({ collection }: Props) {
   const truncated = slugs.length > MAX_SLUGS_IN_COMMAND;
   const installSlugs = truncated ? slugs.slice(0, MAX_SLUGS_IN_COMMAND) : slugs;
   const installCmd = `npx petdex install ${installSlugs.join(" ")}`;
+  const petdexInstallUrl = buildPetdexInstallUrl(installSlugs);
+  const downloadHref = `/${locale}/download?next=${encodeURIComponent(`install/${installSlugs[0] ?? ""}`)}`;
   const collectionUrl = `${SITE_URL}/collections/${collection.slug}`;
   const installHint = truncated
     ? t("installHintTruncated", {
@@ -146,6 +162,46 @@ export function CollectionActionMenu({ collection }: Props) {
           </div>
 
           <ul className="py-1">
+            {slugs.length > 0 && isMac ? (
+              <li>
+                <a
+                  href={downloadHref}
+                  onClick={(e) => {
+                    console.log("downloadHref", petdexInstallUrl);
+                    if (
+                      e.metaKey ||
+                      e.ctrlKey ||
+                      e.shiftKey ||
+                      e.button !== 0
+                    ) {
+                      return;
+                    }
+                    track("open_in_petdex_click", {
+                      source: "collection",
+                      count: installSlugs.length,
+                    });
+                    e.preventDefault();
+                    setOpen(false);
+                    openPetdexDeepLink(petdexInstallUrl, downloadHref);
+                  }}
+                  className="flex items-center gap-2.5 px-3 py-2 text-sm text-muted-2 transition hover:bg-surface-muted hover:text-foreground"
+                >
+                  <Image
+                    src="/brand/petdex-desktop-icon.png"
+                    alt=""
+                    width={16}
+                    height={16}
+                    className="size-4 object-contain"
+                  />
+                  <span className="flex flex-col">
+                    <span>{t("openInPetdex")}</span>
+                    <span className="font-mono text-[10px] tracking-tight text-muted-4">
+                      {t("openInPetdexDesc")}
+                    </span>
+                  </span>
+                </a>
+              </li>
+            ) : null}
             {slugs.length > 0 ? (
               <li>
                 <a

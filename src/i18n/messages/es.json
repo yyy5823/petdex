@@ -1701,6 +1701,8 @@
   "collectionActionMenu": {
     "moreActions": "Más acciones para {title}",
     "closeMenu": "Cerrar menú",
+    "openInPetdex": "Abrir en Petdex Desktop",
+    "openInPetdexDesc": "Instala toda la colección",
     "openInCodex": "Abrir en Codex",
     "openInCodexDesc": "Codex Desktop ejecuta la instalación",
     "copyInstallAll": "Copiar instalar todo",

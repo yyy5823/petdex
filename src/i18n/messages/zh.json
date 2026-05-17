@@ -1938,6 +1938,8 @@
   "collectionActionMenu": {
     "moreActions": "{title} 的更多操作",
     "closeMenu": "关闭菜单",
+    "openInPetdex": "在 Petdex Desktop 中打开",
+    "openInPetdexDesc": "安装整个合集",
     "openInCodex": "在 Codex 中打开",
     "openInCodexDesc": "由 Codex Desktop 执行安装",
     "copyInstallAll": "复制全部安装命令",
