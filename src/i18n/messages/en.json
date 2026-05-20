@@ -111,6 +111,7 @@
     "submitCta": "Submit",
     "browseGallery": "Browse gallery",
     "joinDiscord": "Join the Discord",
+    "joinWeChat": "Join WeChat",
     "openPet": "Open {name}",
     "petAnimated": "{name} animated",
     "petParadeAria": "Featured pets",
@@ -131,6 +132,48 @@
       "title": "Featured collections worth installing",
       "viewAll": "View all",
       "petsCount": "{count, plural, =1 {1 pet} other {# pets}}"
+    }
+  },
+  "community": {
+    "metadata": {
+      "title": "Petdex Community",
+      "description": "Join creators, collectors, and the Petdex team for featured creator spotlights, work-in-progress feedback, and weekly builds."
+    },
+    "eyebrow": "Petdex Community",
+    "title": "Build pixel pets in good company",
+    "description": "The Petdex Community brings together creators, collectors, and the team behind the gallery. Get WIP feedback, follow weekly builds, and meet featured creators.",
+    "joinDiscord": "Join the Discord",
+    "joinWeChat": "Join WeChat",
+    "starGithub": "Star on GitHub",
+    "sections": {
+      "spotlight": {
+        "title": "Featured creators get the spotlight",
+        "body": "GRAYCRAFT, Scientific Minds, Crafter Originals. Every collection has a real creator behind it, and the community is where they take feedback and pick what ships next."
+      },
+      "channels": {
+        "title": "Channels for shipping, not vibing only",
+        "body": "#wip for in-progress sprites, #cli-feedback for bug reports, #ideas synced with the public wishlist, and #ship-or-sink for weekend competitions."
+      },
+      "roles": {
+        "title": "Roles you earn by playing",
+        "body": "@Creator unlocks when your first pet is approved. @Collector at three caught pets. @Featured Creator when your set lands as a curated collection."
+      },
+      "voice": {
+        "title": "Voice rooms that are not dead",
+        "body": "Co-working for silent focus, pixel-jam for live sprite-art collabs, and office-hours with the Petdex team Fridays at 4pm GMT-5."
+      }
+    },
+    "rules": {
+      "eyebrow": "Rules",
+      "title": "Be kind, be specific, ship something",
+      "items": {
+        "respect": "No racism, sexism, or hate speech. Bans are immediate.",
+        "spam": "No spam, no DM solicitation, no NFT shilling.",
+        "critique": "Critique sprites, not creators. Honest, kind, specific.",
+        "languages": "English, Spanish, and Chinese channels welcome. Pick yours.",
+        "ip": "Pet IP belongs to the original creator. Credit always.",
+        "modlog": "Petdex Team mod log is public in #bot-logs. No secrets."
+      }
     }
   },
   "gallery": {
@@ -1604,8 +1647,14 @@
     "namePlaceholder": "Pet display name",
     "descriptionPlaceholder": "Description",
     "editAria": "Edit pet",
+    "automationEvidence": "Automation evidence",
+    "noSummary": "No summary.",
+    "confidence": "Confidence: {confidence}%.",
     "evidenceAssets": "Assets",
-    "evidencePolicy": "Policy"
+    "evidenceSecurity": "Security",
+    "evidencePolicy": "Policy",
+    "evidenceVisualText": "Visual text",
+    "evidenceVisualSignals": "Visual signals"
   },
   "sticker": {
     "ctaWeChat": "Save for WeChat",

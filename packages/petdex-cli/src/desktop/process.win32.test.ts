@@ -63,10 +63,14 @@ describe("desktopBinPath", () => {
   });
 
   test("returns a path under the OS home directory", () => {
-    // desktopBinPath() uses os.homedir() for the fallback path. In test
-    // environments there is no /Applications/Petdex.app, so the fallback
-    // ~/.petdex/bin/petdex-desktop[.exe] is always returned.
-    expect(desktopBinPath().startsWith(homedir())).toBe(true);
+    const binPath = desktopBinPath();
+    if (process.platform === "darwin" && binPath.includes("Petdex.app")) {
+      expect(binPath.endsWith("Petdex.app/Contents/MacOS/petdex-desktop")).toBe(
+        true,
+      );
+      return;
+    }
+    expect(binPath.startsWith(homedir())).toBe(true);
   });
 });
 

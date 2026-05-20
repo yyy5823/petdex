@@ -26,6 +26,7 @@ const agent_assets = [_]AgentAsset{
     .{ .name = "codex.svg", .bytes = @embedFile("assets/agents/codex.svg") },
     .{ .name = "gemini.svg", .bytes = @embedFile("assets/agents/gemini.svg") },
     .{ .name = "opencode.svg", .bytes = @embedFile("assets/agents/opencode.svg") },
+    .{ .name = "antigravity.svg", .bytes = @embedFile("assets/agents/antigravity.svg") },
     .{ .name = "fallback.svg", .bytes = @embedFile("assets/agents/fallback.svg") },
 };
 
@@ -287,6 +288,7 @@ const html_tail =
     \\    'codex': 'agents/codex.svg',
     \\    'gemini': 'agents/gemini.svg',
     \\    'opencode': 'agents/opencode.svg',
+    \\    'antigravity': 'agents/antigravity.svg',
     \\  };
     \\  function agentAvatarSrc(source) {
     \\    return AGENT_AVATARS[source] || 'agents/fallback.svg';

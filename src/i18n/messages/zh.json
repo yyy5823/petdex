@@ -119,6 +119,7 @@
     "browseGallery__fixme": true,
     "joinDiscord": "加入 Discord",
     "joinDiscord__fixme": true,
+    "joinWeChat": "加入微信群",
     "openPet": "打开 {name}",
     "openPet__fixme": true,
     "petAnimated": "{name} 动画",
@@ -148,6 +149,48 @@
       "title": "值得安装的精选合集",
       "viewAll": "查看全部",
       "petsCount": "{count} 个宠物"
+    }
+  },
+  "community": {
+    "metadata": {
+      "title": "Petdex 中文社区",
+      "description": "加入 Petdex 中文社区，和创作者、收藏者、维护者一起交流宠物创作、提交反馈和每周更新。"
+    },
+    "eyebrow": "Petdex 中文社区",
+    "title": "一起创作 Codex 像素宠物",
+    "description": "这里是 Petdex 的中文社区。你可以交流宠物创作、提交问题、查看每周更新，也可以认识正在制作新宠物和合集的创作者。",
+    "joinDiscord": "加入 Discord",
+    "joinWeChat": "加入微信群",
+    "starGithub": "在 GitHub 点星",
+    "sections": {
+      "spotlight": {
+        "title": "优秀创作者会被更多人看到",
+        "body": "GRAYCRAFT、Scientific Minds、Crafter Originals 等合集背后都有真实创作者。中文社区会收集反馈，也会帮助决定下一批要展示的作品。"
+      },
+      "channels": {
+        "title": "围绕创作和发布交流",
+        "body": "可以分享进行中的 sprites、反馈 CLI 问题、提出新想法，也可以参与周末的 Ship or Sink 创作活动。"
+      },
+      "roles": {
+        "title": "参与越多，身份越明确",
+        "body": "第一只宠物通过审核后可以成为 Creator。捕获三只宠物后成为 Collector。作品进入精选合集后成为 Featured Creator。"
+      },
+      "voice": {
+        "title": "适合中文用户的入口",
+        "body": "Discord 仍然保留给全球社区。中文用户可以优先通过微信群交流创作、提交和审核问题。"
+      }
+    },
+    "rules": {
+      "eyebrow": "规则",
+      "title": "友善、具体、持续发布",
+      "items": {
+        "respect": "禁止种族歧视、性别歧视和仇恨言论。违规会直接封禁。",
+        "spam": "禁止垃圾信息、私信骚扰和 NFT 推销。",
+        "critique": "评价作品，不攻击创作者。反馈要诚实、友善、具体。",
+        "languages": "欢迎使用中文、英文或西班牙语交流。",
+        "ip": "宠物 IP 属于原创作者。引用和二创请保留署名。",
+        "modlog": "Petdex Team 的审核记录会公开保留，敏感信息不会公开。"
+      }
     }
   },
   "gallery": {
@@ -1841,8 +1884,14 @@
     "namePlaceholder": "宠物显示名称",
     "descriptionPlaceholder": "描述",
     "editAria": "编辑宠物",
+    "automationEvidence": "自动审核证据",
+    "noSummary": "暂无摘要。",
+    "confidence": "置信度：{confidence}%。",
     "evidenceAssets": "素材",
-    "evidencePolicy": "政策"
+    "evidenceSecurity": "安全",
+    "evidencePolicy": "政策",
+    "evidenceVisualText": "图中文字",
+    "evidenceVisualSignals": "视觉信号"
   },
   "sticker": {
     "ctaWeChat": "保存为微信表情",

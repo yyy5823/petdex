@@ -14,13 +14,20 @@
  * fresh token (handy after a security-relevant uninstall).
  */
 import { existsSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 
-import { AGENTS, type Agent, PETDEX_PORT, SIDECAR_URL } from "./agents.js";
+import {
+  AGENTS,
+  type Agent,
+  antigravityMcpConfigPaths,
+  antigravitySkillDir,
+  PETDEX_PORT,
+  SIDECAR_URL,
+} from "./agents.js";
 import { tokenPath } from "./killswitch.js";
 import { uninstallSlashCommand } from "./slash-command.js";
 
@@ -64,10 +71,15 @@ export async function runUninstall(
           `  ${pc.dim("•")} ${pc.bold(agent.displayName)} ${pc.dim("(no petdex entries found)")}`,
         );
       }
-      // Always try to clean up the slash command file even if the
-      // hook config had no petdex entries — the user might have run
-      // an older version that wrote one without writing hooks.
-      await uninstallSlashCommand(agent);
+      // Antigravity manages its slash command path as the Agent Skill
+      // SKILL.md (handled within uninstallForAgent), so skip the generic
+      // slash command cleanup to avoid a double-remove on the same file.
+      if (agent.id !== "antigravity") {
+        // Always try to clean up the slash command file even if the
+        // hook config had no petdex entries — the user might have run
+        // an older version that wrote one without writing hooks.
+        await uninstallSlashCommand(agent);
+      }
     } catch (err) {
       summary.push(
         `  ${pc.red("✗")} ${pc.bold(agent.displayName)} ${pc.red(err instanceof Error ? err.message : String(err))}`,
@@ -107,8 +119,19 @@ async function detectAgents(): Promise<Detection[]> {
   return Promise.all(
     AGENTS.map(async (agent) => ({
       agent,
-      installed: existsSync(agent.configDir),
+      installed:
+        agent.id === "antigravity"
+          ? antigravityInstalled()
+          : existsSync(agent.configDir),
     })),
+  );
+}
+
+function antigravityInstalled(): boolean {
+  return (
+    antigravityMcpConfigPaths().some((mcpPath) =>
+      existsSync(path.dirname(mcpPath)),
+    ) || existsSync(antigravitySkillDir())
   );
 }
 
@@ -118,15 +141,60 @@ type UninstallResult = {
 };
 
 async function uninstallForAgent(agent: Agent): Promise<UninstallResult> {
-  // OpenCode: just delete the plugin file we wrote. The plugin file
-  // path is OURS (we created it under plugins/petdex.js); it's safe
-  // to remove without parsing.
+  // OpenCode: just delete the plugin file we wrote.
   if (agent.id === "opencode") {
     if (!existsSync(agent.configFile))
       return { removed: false, backupPath: null };
     const backupPath = await maybeBackup(agent.configFile);
     await rm(agent.configFile, { force: true });
     return { removed: true, backupPath };
+  }
+
+  // Antigravity: remove the MCP server entry and the Skill directory.
+  // Install may have written to either the primary or secondary MCP config
+  // path (see resolveAntigravityMcpConfigPath), so we try both.
+  if (agent.id === "antigravity") {
+    let changed = false;
+    for (const mcpConfigPath of antigravityMcpConfigPaths()) {
+      try {
+        if (existsSync(mcpConfigPath)) {
+          const text = await readFile(mcpConfigPath, "utf8");
+          const parsed = JSON.parse(text) as Record<string, unknown>;
+          const servers = (parsed.mcpServers ?? {}) as Record<string, unknown>;
+          if (servers.petdex) {
+            const { petdex: _remove, ...rest } = servers;
+            parsed.mcpServers = rest;
+            await maybeBackup(mcpConfigPath);
+            await writeFile(
+              mcpConfigPath,
+              `${JSON.stringify(parsed, null, 2)}\n`,
+              "utf8",
+            );
+            changed = true;
+          }
+        }
+      } catch {
+        // Best effort for each path
+      }
+    }
+    // Remove the Skill directory — only mark changed if it actually existed
+    try {
+      const skillDir = antigravitySkillDir();
+      let skillExists = false;
+      try {
+        await stat(skillDir);
+        skillExists = true;
+      } catch {
+        /* not present */
+      }
+      if (skillExists) {
+        await rm(skillDir, { recursive: true, force: true });
+        changed = true;
+      }
+    } catch {
+      // Best effort
+    }
+    return { removed: changed, backupPath: null };
   }
 
   // JSON-config agents: read, strip our entries, rewrite.

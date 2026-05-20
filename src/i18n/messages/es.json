@@ -111,6 +111,7 @@
     "submitCta": "Enviar",
     "browseGallery": "Ver galería",
     "joinDiscord": "Unirse al Discord",
+    "joinWeChat": "Unirse a WeChat",
     "openPet": "Abrir {name}",
     "petAnimated": "{name} animado",
     "petParadeAria": "Mascotas destacadas",
@@ -131,6 +132,48 @@
       "title": "Colecciones destacadas para instalar",
       "viewAll": "Ver todas",
       "petsCount": "{count, plural, =1 {1 mascota} other {# mascotas}}"
+    }
+  },
+  "community": {
+    "metadata": {
+      "title": "Comunidad de Petdex",
+      "description": "Únete a creadores, coleccionistas y al equipo de Petdex para ver creadores destacados, feedback de trabajos en progreso y builds semanales."
+    },
+    "eyebrow": "Comunidad Petdex",
+    "title": "Crea pixel pets en buena compañía",
+    "description": "La comunidad de Petdex reúne a creadores, coleccionistas y al equipo detrás de la galería. Recibe feedback de WIP, sigue builds semanales y conoce creadores destacados.",
+    "joinDiscord": "Unirse al Discord",
+    "joinWeChat": "Unirse a WeChat",
+    "starGithub": "Dar star en GitHub",
+    "sections": {
+      "spotlight": {
+        "title": "Los creadores destacados tienen foco",
+        "body": "GRAYCRAFT, Scientific Minds, Crafter Originals. Cada colección tiene una persona real detrás, y la comunidad es donde reciben feedback y deciden qué sale después."
+      },
+      "channels": {
+        "title": "Canales para shippear, no solo para conversar",
+        "body": "#wip para sprites en progreso, #cli-feedback para bugs, #ideas sincronizado con el wishlist público y #ship-or-sink para competencias de fin de semana."
+      },
+      "roles": {
+        "title": "Roles que ganas participando",
+        "body": "@Creator se desbloquea cuando aprueban tu primera mascota. @Collector con tres mascotas capturadas. @Featured Creator cuando tu set entra como colección curada."
+      },
+      "voice": {
+        "title": "Salas de voz con actividad real",
+        "body": "Co-working para foco silencioso, pixel-jam para collabs de sprite art en vivo y office-hours con el equipo de Petdex los viernes a las 4pm GMT-5."
+      }
+    },
+    "rules": {
+      "eyebrow": "Reglas",
+      "title": "Sé amable, sé específico, shippea algo",
+      "items": {
+        "respect": "Nada de racismo, sexismo o hate speech. Baneo inmediato.",
+        "spam": "Nada de spam, solicitud por DM o NFT shilling.",
+        "critique": "Critica sprites, no creadores. Honesto, amable, específico.",
+        "languages": "Canales en inglés, español y chino son bienvenidos. Elige el tuyo.",
+        "ip": "La IP de cada mascota pertenece a su creador original. Siempre da crédito.",
+        "modlog": "El mod log de Petdex Team es público en #bot-logs. Sin secretos."
+      }
     }
   },
   "gallery": {
@@ -1604,8 +1647,14 @@
     "namePlaceholder": "Nombre de la mascota",
     "descriptionPlaceholder": "Descripción",
     "editAria": "Editar mascota",
+    "automationEvidence": "Evidencia automática",
+    "noSummary": "Sin resumen.",
+    "confidence": "Confianza: {confidence}%.",
     "evidenceAssets": "Archivos",
-    "evidencePolicy": "Política"
+    "evidenceSecurity": "Seguridad",
+    "evidencePolicy": "Política",
+    "evidenceVisualText": "Texto visual",
+    "evidenceVisualSignals": "Señales visuales"
   },
   "sticker": {
     "ctaWeChat": "Guardar para WeChat",
