@@ -506,7 +506,7 @@ async function cmdInstall(args: string[]) {
   }
 }
 
-async function download(url: string, dest: string): Promise<void> {
+async function _download(url: string, dest: string): Promise<void> {
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`download ${url} → ${res.status}`);
@@ -735,7 +735,7 @@ async function cmdEdit(args: string[]): Promise<void> {
   }
 
   function flagValue(flag: string): string | null {
-    const idx = args.findIndex((a) => a === flag);
+    const idx = args.indexOf(flag);
     if (idx === -1) return null;
     const val = args[idx + 1];
     return typeof val === "string" && !val.startsWith("--") ? val : null;
@@ -1501,7 +1501,7 @@ async function cmdInit(): Promise<void> {
     );
   }
 
-  const { installedAgents } = await runHooksInstall();
+  const { installedAgents: _installedAgents } = await runHooksInstall();
 
   // Auto-start the mascot. Skipping this used to leave the user with
   // a working hook chain but no visible mascot — they'd run /petdex

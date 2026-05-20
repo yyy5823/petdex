@@ -21,6 +21,7 @@ import type { ReviewChecks } from "@/lib/submission-review-types";
 function cleanChecks(): ReviewChecks {
   return {
     assets: { decision: "pass", reasons: [] },
+    security: { decision: "pass", reasons: [], findings: [] },
     policy: { decision: "pass", confidence: 0.96, reasons: [], flags: [] },
     duplicates: {
       decision: "pass",
@@ -62,6 +63,80 @@ describe("decideAutomatedReview", () => {
     const result = decideAutomatedReview(checks);
     expect(result.decision).toBe("auto_reject");
     expect(result.reasonCode).toBe("duplicate_exact_asset");
+  });
+
+  it("auto-rejects high-confidence pet.json security payloads", () => {
+    const checks = cleanChecks();
+    checks.security = {
+      decision: "fail",
+      reasons: ["shell_command_substitution: $(touch /tmp/pwned)"],
+      findings: [
+        {
+          code: "shell_command_substitution",
+          severity: "fail",
+          path: "$.displayName",
+          evidence: "$(touch /tmp/pwned)",
+        },
+      ],
+    };
+
+    const result = decideAutomatedReview(checks);
+    expect(result.decision).toBe("auto_reject");
+    expect(result.reasonCode).toBe("security_malicious_pet_json");
+    expect(result.canApply).toBe(true);
+  });
+
+  it("uses fail-severity security findings for auto-reject summaries", () => {
+    const checks = cleanChecks();
+    checks.security = {
+      decision: "fail",
+      reasons: [
+        "external_url_in_pet_json: https://example.com",
+        "shell_command_substitution: $(touch /tmp/pwned)",
+      ],
+      findings: [
+        {
+          code: "external_url_in_pet_json",
+          severity: "hold",
+          path: "$.homepage",
+          evidence: "https://example.com",
+        },
+        {
+          code: "shell_command_substitution",
+          severity: "fail",
+          path: "$.displayName",
+          evidence: "$(touch /tmp/pwned)",
+        },
+      ],
+    };
+
+    const result = decideAutomatedReview(checks);
+
+    expect(result.decision).toBe("auto_reject");
+    expect(result.summary).toBe(
+      "shell_command_substitution: $(touch /tmp/pwned)",
+    );
+  });
+
+  it("holds suspicious pet.json security findings", () => {
+    const checks = cleanChecks();
+    checks.security = {
+      decision: "hold",
+      reasons: ["external_url_in_pet_json: https://example.com"],
+      findings: [
+        {
+          code: "external_url_in_pet_json",
+          severity: "hold",
+          path: "$.homepage",
+          evidence: "https://example.com",
+        },
+      ],
+    };
+
+    const result = decideAutomatedReview(checks);
+    expect(result.decision).toBe("hold");
+    expect(result.reasonCode).toBe("security_review_hold");
+    expect(result.canApply).toBe(false);
   });
 
   it("auto-approves metadata-only overlaps", () => {

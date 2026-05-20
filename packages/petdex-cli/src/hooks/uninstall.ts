@@ -164,7 +164,7 @@ async function uninstallForAgent(agent: Agent): Promise<UninstallResult> {
           if (servers.petdex) {
             const { petdex: _remove, ...rest } = servers;
             parsed.mcpServers = rest;
-            const backupPath = await maybeBackup(mcpConfigPath);
+            await maybeBackup(mcpConfigPath);
             await writeFile(
               mcpConfigPath,
               `${JSON.stringify(parsed, null, 2)}\n`,

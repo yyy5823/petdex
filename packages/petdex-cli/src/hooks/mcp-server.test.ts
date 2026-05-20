@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const CLI_PACKAGE_DIR = fileURLToPath(new URL("../..", import.meta.url));
 
 function frame(message: unknown, newline: "\r\n" | "\n" = "\r\n"): string {
   const body = JSON.stringify(message);
@@ -37,7 +40,7 @@ async function runServer(input: string, beforeInputDelay = 0) {
       'import("./src/hooks/mcp-server.ts").then(({ runMcpServer }) => runMcpServer())',
     ],
     {
-      cwd: process.cwd(),
+      cwd: CLI_PACKAGE_DIR,
       stdio: ["pipe", "pipe", "pipe"],
     },
   );
@@ -164,7 +167,7 @@ describe("Petdex MCP server stdio", () => {
         'import("./src/hooks/mcp-server.ts").then(({ runMcpServer }) => runMcpServer())',
       ],
       {
-        cwd: process.cwd(),
+        cwd: CLI_PACKAGE_DIR,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );

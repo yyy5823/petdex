@@ -74,9 +74,9 @@ export function UnsubscribeForm({
               Stop getting Petdex newsletters?
             </p>
             <p className="mt-2 text-sm leading-6 text-muted-2">
-              We send a few curated updates a month: new collections, pet
-              drops, community moments. Transactional emails (pet approved,
-              feedback replies) are not affected.
+              We send a few curated updates a month: new collections, pet drops,
+              community moments. Transactional emails (pet approved, feedback
+              replies) are not affected.
             </p>
           </div>
           <button

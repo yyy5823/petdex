@@ -454,12 +454,7 @@ export const AGENTS: Agent[] = [
     displayName: "Gemini CLI",
     configDir: path.join(HOME, ".gemini"),
     configFile: path.join(HOME, ".gemini", "settings.json"),
-    slashCommandPath: path.join(
-      HOME,
-      ".gemini",
-      "commands",
-      "petdex.toml",
-    ),
+    slashCommandPath: path.join(HOME, ".gemini", "commands", "petdex.toml"),
     docsUrl: "https://google-gemini.github.io/gemini-cli/docs/hooks",
     hookEntries: [
       { event: "BeforeTool", kind: "tool.before" },
@@ -628,7 +623,7 @@ function curlOnlyState(
   ].join(" ");
 }
 
-function curlCommand(
+function _curlCommand(
   agentId: Agent["id"],
   state: PetState,
   duration?: number,

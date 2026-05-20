@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Readable } from "node:stream";
 
 import { generateText } from "ai";
 import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
@@ -12,6 +13,11 @@ import {
   embedTextValue,
   PETDEX_EMBEDDING_MODEL,
 } from "@/lib/embeddings";
+import {
+  petSecurityPathSegment,
+  scanPetManifestsSecurity,
+  scanPetSecurity,
+} from "@/lib/pet-security";
 import { decideAutomatedReview } from "@/lib/submission-review-decision";
 import { preparePolicyReviewImage } from "@/lib/submission-review-image";
 import {
@@ -37,6 +43,8 @@ import { isAllowedAssetUrl } from "@/lib/url-allowlist";
 
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 80;
+const MAX_ZIP_PET_JSON_SCAN_ENTRIES = 16;
+const MAX_ZIP_PET_JSON_TOTAL_BYTES = MAX_ASSET_BYTES;
 const MIN_SPRITE_DIM = 256;
 const FRAME_W = 192;
 const FRAME_H = 208;
@@ -63,9 +71,15 @@ export type ReviewSubmissionResult = {
 
 type AssetAnalysis = {
   check: ReviewChecks["assets"];
+  security: NonNullable<ReviewChecks["security"]>;
   spriteBuffer: Buffer | null;
   petJson: unknown;
   dhash: string | null;
+};
+
+type ZipPetJson = {
+  name: string;
+  petJson: unknown;
 };
 
 type VisualMatchScan = {
@@ -146,12 +160,29 @@ export async function reviewSubmission(
     const assets = await analyzeAssets(row);
     await persistAssetSignals(row.id, assets);
 
-    const [policy, duplicates] = await Promise.all([
-      analyzePolicy(row, assets),
-      analyzeDuplicates(row, assets),
-    ]);
+    let policy: ReviewChecks["policy"] = {
+      decision: "hold",
+      confidence: 0,
+      reasons: ["Skipped because security review failed."],
+      flags: [],
+    };
+    let duplicates: ReviewChecks["duplicates"] = {
+      decision: "hold",
+      reasons: ["Skipped because security review failed."],
+      exactMatches: [],
+      visualMatches: [],
+      semanticMatches: [],
+      metadataMatches: [],
+    };
+    if (assets.security?.decision !== "fail") {
+      [policy, duplicates] = await Promise.all([
+        analyzePolicy(row, assets),
+        analyzeDuplicates(row, assets),
+      ]);
+    }
 
     checks = {
+      security: assets.security,
       assets: assets.check,
       policy,
       duplicates,
@@ -179,13 +210,13 @@ export async function reviewSubmission(
             ? { action: "approve" }
             : {
                 action: "reject",
-                reason:
-                  "This submission appears to duplicate an existing pet pack. If you believe this is incorrect, contact support with the submission ID.",
+                reason: rejectionReasonForDecision(decision),
               },
           {
             actor: "auto-review",
             db,
             skipSideEffects: process.env.PETDEX_REVIEW_DB === "runtime",
+            skipNotifications: process.env.PETDEX_REVIEW_DB === "runtime",
           },
         );
         applied = actionResult.ok;
@@ -316,6 +347,14 @@ async function finishReview(
   return { review, applied: args.applied };
 }
 
+function rejectionReasonForDecision(decision: {
+  reasonCode: string;
+  summary: string;
+}): string {
+  if (decision.reasonCode.startsWith("security_")) return decision.summary;
+  return "This submission appears to duplicate an existing pet pack. If you believe this is incorrect, contact support with the submission ID.";
+}
+
 async function analyzeAssets(row: SubmittedPet): Promise<AssetAnalysis> {
   const reasons: string[] = [];
   const [sprite, petJson, zip] = await Promise.all([
@@ -337,6 +376,7 @@ async function analyzeAssets(row: SubmittedPet): Promise<AssetAnalysis> {
     }
   }
 
+  const zipPetJsons: ZipPetJson[] = [];
   if (zip.ok) {
     try {
       const archive = await JSZip.loadAsync(zip.buffer);
@@ -347,10 +387,41 @@ async function analyzeAssets(row: SubmittedPet): Promise<AssetAnalysis> {
       if (names.some(hasUnsafeZipPath)) {
         reasons.push("zip contains unsafe paths.");
       }
-      const basenames = new Set(names.map((name) => name.split("/").pop()));
-      if (!basenames.has("pet.json")) {
+      const petJsonNames = names.filter((name) => {
+        const file = archive.files[name];
+        return !file?.dir && name.split("/").pop() === "pet.json";
+      });
+      if (petJsonNames.length === 0) {
         reasons.push("zip does not contain pet.json.");
+      } else {
+        if (petJsonNames.length > 1) {
+          reasons.push("zip contains multiple pet.json files.");
+        }
+        let zipPetJsonTotalBytes = 0;
+        for (const name of petJsonNames) {
+          if (zipPetJsons.length >= MAX_ZIP_PET_JSON_SCAN_ENTRIES) {
+            reasons.push("zip pet.json scan entry limit reached.");
+            break;
+          }
+          const entry = archive.files[name];
+          const size = zipEntryUncompressedSize(entry);
+          if (
+            size !== null &&
+            zipPetJsonTotalBytes + size > MAX_ZIP_PET_JSON_TOTAL_BYTES
+          ) {
+            reasons.push("zip pet.json total size exceeds the scan limit.");
+            break;
+          }
+          const zipped = await readZipPetJson(entry, MAX_ASSET_BYTES);
+          if (zipped.ok) {
+            zipPetJsons.push({ name, petJson: zipped.petJson });
+            zipPetJsonTotalBytes += size ?? 0;
+          } else {
+            reasons.push(`zip ${name}: ${zipped.reason}`);
+          }
+        }
       }
+      const basenames = new Set(names.map((name) => name.split("/").pop()));
       if (
         !basenames.has("spritesheet.webp") &&
         !basenames.has("spritesheet.png")
@@ -389,6 +460,15 @@ async function analyzeAssets(row: SubmittedPet): Promise<AssetAnalysis> {
     petJsonSha256: petJson.ok ? sha256(petJson.buffer) : null,
     zipSha256: zip.ok ? sha256(zip.buffer) : null,
   };
+  const security = scanPetManifestsSecurity({
+    petJson: parsedJson,
+    zipPetJson: zipPetJsons[0]?.petJson,
+    displayName: row.displayName,
+    description: row.description,
+  });
+  for (const entry of zipPetJsons.slice(1)) {
+    appendZipPetJsonSecurity(security, entry);
+  }
 
   return {
     check: {
@@ -396,10 +476,34 @@ async function analyzeAssets(row: SubmittedPet): Promise<AssetAnalysis> {
       reasons,
       hashes,
     },
+    security,
     spriteBuffer: sprite.ok ? sprite.buffer : null,
     petJson: parsedJson,
     dhash,
   };
+}
+
+function appendZipPetJsonSecurity(
+  security: NonNullable<ReviewChecks["security"]>,
+  entry: ZipPetJson,
+) {
+  const entryScan = scanPetSecurity({ petJson: entry.petJson });
+  const entryName = petSecurityPathSegment(entry.name);
+  security.findings.push(
+    ...entryScan.findings.map((finding) => ({
+      ...finding,
+      path: `zip.petJson[${JSON.stringify(entryName)}]${finding.path === "$" ? "" : finding.path.startsWith("$") ? finding.path.slice(1) : `.${finding.path}`}`,
+    })),
+  );
+  security.reasons.push(
+    ...entryScan.findings.map(
+      (finding) => `zip ${entryName}: ${finding.code}: ${finding.evidence}`,
+    ),
+  );
+  if (entryScan.decision === "fail") security.decision = "fail";
+  if (security.decision === "pass" && entryScan.decision === "hold") {
+    security.decision = "hold";
+  }
 }
 
 async function analyzePolicy(
@@ -1119,6 +1223,11 @@ function buildPolicyUserPrompt(row: SubmittedPet, petJson: unknown): string {
 
 function emptyChecks(dryRun: boolean): ReviewChecks {
   return {
+    security: {
+      decision: "hold",
+      reasons: ["Security review has not run yet."],
+      findings: [],
+    },
     assets: { decision: "hold", reasons: ["Review has not run yet."] },
     policy: { decision: "hold", confidence: 0, reasons: [], flags: [] },
     duplicates: {
@@ -1189,6 +1298,79 @@ function sha256(buffer: Buffer): string {
 
 function hasUnsafeZipPath(name: string): boolean {
   return name.startsWith("/") || name.split("/").includes("..");
+}
+
+type ZipEntryWithData = JSZip.JSZipObject & {
+  _data?: { uncompressedSize?: unknown };
+};
+
+async function readZipPetJson(
+  entry: JSZip.JSZipObject,
+  maxBytes: number,
+): Promise<{ ok: true; petJson: unknown } | { ok: false; reason: string }> {
+  const size = zipEntryUncompressedSize(entry);
+  if (size === null) {
+    return { ok: false, reason: "zip pet.json size could not be verified." };
+  }
+  if (size > maxBytes) {
+    return {
+      ok: false,
+      reason: "zip pet.json exceeds the maximum allowed size.",
+    };
+  }
+  const streamed = await readZipEntryBuffer(
+    entry,
+    maxBytes,
+    "zip pet.json exceeds the maximum allowed size.",
+  );
+  if (!streamed.ok) return streamed;
+  try {
+    const bytes = streamed.buffer;
+    return { ok: true, petJson: JSON.parse(bytes.toString("utf8")) };
+  } catch {
+    return { ok: false, reason: "zip pet.json could not be parsed as JSON." };
+  }
+}
+
+function readZipEntryBuffer(
+  entry: JSZip.JSZipObject,
+  maxBytes: number,
+  sizeReason: string,
+): Promise<{ ok: true; buffer: Buffer } | { ok: false; reason: string }> {
+  return new Promise((resolve) => {
+    const stream = entry.nodeStream("nodebuffer") as Readable;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const finish = (
+      result: { ok: true; buffer: Buffer } | { ok: false; reason: string },
+    ) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    stream.on("data", (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.byteLength;
+      if (total > maxBytes) {
+        stream.destroy();
+        finish({ ok: false, reason: sizeReason });
+        return;
+      }
+      chunks.push(buffer);
+    });
+    stream.on("error", () => {
+      finish({ ok: false, reason: "zip pet.json could not be read." });
+    });
+    stream.on("end", () => {
+      finish({ ok: true, buffer: Buffer.concat(chunks, total) });
+    });
+  });
+}
+
+function zipEntryUncompressedSize(entry: JSZip.JSZipObject): number | null {
+  const size = (entry as ZipEntryWithData)._data?.uncompressedSize;
+  return typeof size === "number" && Number.isFinite(size) ? size : null;
 }
 
 function normalizeText(value: string): string {

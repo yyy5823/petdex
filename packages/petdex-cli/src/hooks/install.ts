@@ -118,12 +118,13 @@ export async function runInstall(): Promise<HooksInstallResult> {
   const summary: string[] = [];
   const followUps: { agent: string; notes: PostInstallNote[] }[] = [];
   const installedAgents: string[] = [];
-  const selectedIds = new Set(selected);
-  for (const id of selected) {
+  const selectedAgentIds = selected as string[];
+  const selectedIds = new Set<string>(selectedAgentIds);
+  for (const id of selectedAgentIds) {
     const agent = AGENTS.find((a) => a.id === id);
     if (!agent) continue;
     try {
-      const result = await installForAgent(agent, {
+      await installForAgent(agent, {
         installSlashCommand: shouldInstallSlashCommand(agent, selectedIds),
       });
       installedAgents.push(agent.id);
@@ -202,8 +203,9 @@ export function shouldInstallSlashCommand(
   agent: Agent,
   selectedIds: Set<string>,
 ): boolean {
-  return agent.id !== "antigravity" && !(
-    agent.id === "gemini" && selectedIds.has("antigravity")
+  return (
+    agent.id !== "antigravity" &&
+    !(agent.id === "gemini" && selectedIds.has("antigravity"))
   );
 }
 
@@ -240,7 +242,7 @@ export async function installForAgent(
 
   // Antigravity uses MCP config + Agent Skill instead of hooks.
   if (agent.id === "antigravity") {
-    await installForAntigravity(agent);
+    await installForAntigravity();
     return { backupPath: null };
   }
 
@@ -319,7 +321,9 @@ function mergeHooks(
   const mergedHooks: Record<string, unknown[]> = { ...existingHooks };
 
   for (const [event, entries] of Object.entries(patchHooks)) {
-    const prior = Array.isArray(mergedHooks[event]) ? mergedHooks[event]! : [];
+    const prior = Array.isArray(mergedHooks[event])
+      ? (mergedHooks[event] as unknown[])
+      : [];
     const filteredPrior = prior.filter((entry) => !isPetdexEntry(entry));
     mergedHooks[event] = [...filteredPrior, ...entries];
   }
@@ -389,7 +393,7 @@ async function validatePersistedBinary(): Promise<boolean> {
   }
 }
 
-async function installForAntigravity(agent: Agent): Promise<void> {
+async function installForAntigravity(): Promise<void> {
   // 0. Always persist a fresh snapshot of the running CLI binary, then
   // validate it supports the mcp-server subcommand. Antigravity's MCP server
   // runs via node ~/.petdex/bin/petdex.js mcp-server. Unlike hook agents
@@ -421,8 +425,7 @@ async function installForAntigravity(agent: Agent): Promise<void> {
       `Refusing to overwrite ${mcpConfigPath}: ${existing.message}.\n   Fix the file (or rename it) and run \`petdex hooks install\` again.`,
     );
   }
-  const backupPath =
-    existing.kind === "ok" ? await maybeBackup(mcpConfigPath) : null;
+  if (existing.kind === "ok") await maybeBackup(mcpConfigPath);
   const base =
     existing.kind === "ok" ? (existing.value as Record<string, unknown>) : {};
   const existingServers = (base.mcpServers ?? {}) as Record<string, unknown>;

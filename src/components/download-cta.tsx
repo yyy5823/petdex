@@ -20,9 +20,9 @@ const MACOS_X64_URL = "/api/desktop/latest-release?asset=darwin-x64";
  * dead-ends in a binary the user can't run.
  *
  *   macOS         → primary download button (direct binary)
- *   linux/win     → disabled "Coming soon" pill + still-works CLI
- *                   note (CLI itself runs on those platforms too,
- *                   even if the GUI binary doesn't)
+ *   linux/win     → disabled "Coming soon" pill + still-works CLI note
+ *                   (CLI itself runs on those platforms too, even if the
+ *                   GUI binary isn't self-contained yet)
  *   ios/ipados    → "macOS-only desktop" coming-soon, no CTA at all
  *   android       → same as iOS
  *   unknown/other → neutral placeholder (SSR + first paint, or a
@@ -124,8 +124,7 @@ function PrimaryButton({
     );
   }
 
-  // Desktop platforms we don't have a binary for yet. The button
-  // is non-clickable but mirrors the layout so we don't reflow.
+  // Linux / Windows — binary not yet self-contained (sidecar bundling pending).
   if (platform === "linux" || platform === "windows") {
     return (
       <span
@@ -135,7 +134,7 @@ function PrimaryButton({
         <Clock className="size-4" />
         {comingSoonLabel.replace(
           "{os}",
-          platform === "linux" ? "Linux" : "Windows",
+          platform === "windows" ? "Windows" : "Linux",
         )}
       </span>
     );
