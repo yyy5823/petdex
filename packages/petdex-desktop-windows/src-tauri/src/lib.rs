@@ -65,7 +65,7 @@ fn canonical_normalize(p: &std::path::Path) -> PathBuf {
 }
 
 /// Returns the path of the first valid sprite file found in `pet_dir`.
-/// Valid means: regular file, within MAX_PET_BYTES, one of the known extensions.
+/// Valid means: regular non-empty file, within MAX_PET_BYTES, one of the known extensions.
 /// pet.json is NOT required — the sprite file is the authoritative marker.
 fn find_valid_sprite(pet_dir: &std::path::Path) -> Option<PathBuf> {
     for name in &[
@@ -76,7 +76,7 @@ fn find_valid_sprite(pet_dir: &std::path::Path) -> Option<PathBuf> {
     ] {
         let p = pet_dir.join(name);
         if let Ok(meta) = fs::metadata(&p) {
-            if meta.is_file() && meta.len() <= MAX_PET_BYTES {
+            if meta.is_file() && meta.len() > 0 && meta.len() <= MAX_PET_BYTES {
                 return Some(p);
             }
         }
@@ -279,6 +279,9 @@ fn read_file_as_base64(path: String) -> Result<String, String> {
     }
     let meta = fs::metadata(&canonical)
         .map_err(|e| format!("cannot stat file: {e}"))?;
+    if meta.len() == 0 {
+        return Err("file is empty".into());
+    }
     if meta.len() > MAX_PET_BYTES {
         return Err(format!(
             "file too large ({} bytes, cap {} bytes)",

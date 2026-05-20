@@ -628,11 +628,10 @@ export function isTrustedAssetUrl(url: string): boolean {
   }
 }
 
-// Lazy HOME lookup so tests can swap process.env.HOME and have the
-// pets dirs land in their tmpdir. os.homedir() ignores HOME on
-// macOS — we prefer process.env.HOME, then USERPROFILE (Windows),
-// falling back to homedir() when neither is set.
 export function homeDir(): string {
+  if (nodePlatform() === "win32") {
+    return process.env.USERPROFILE ?? process.env.HOME ?? homedir();
+  }
   return process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 }
 
